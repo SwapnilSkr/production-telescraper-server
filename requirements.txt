@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+telethon
+motor
+python-decouple

@@ -1,0 +1,38 @@
+# Python Bytecode
+__pycache__/
+*.py[cod]
+
+# Environment Variables
+.env
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Compiled files
+*.pyc
+*.pyo
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Miscellaneous
+.DS_Store  # macOS Finder file
+Thumbs.db  # Windows thumbnail cache
