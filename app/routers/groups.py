@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from app.database import groups_collection, messages_collection
+from app.telegram_client import telegram_client
 from app.services.group_service import register_or_update_group
 from app.services.telegram_listener import update_listener
 from datetime import datetime
@@ -37,17 +38,28 @@ async def get_group_with_messages(username: str):
 
 @router.get("/groups")
 async def get_groups():
-    """Fetch all groups with their messages."""
+    """
+    Fetch all groups from the database and verify their validity on Telegram.
+    Only return groups that are active and recognized by Telegram.
+    """
     try:
         groups = await groups_collection.find().to_list(length=100)
-        responses = []
+        valid_groups = []
+
         for group in groups:
-            group = serialize_mongo_document(group)
-            messages = await messages_collection.find({"group_id": group.get("group_id")}).to_list(length=100)
-            messages = [serialize_mongo_document(msg) for msg in messages]
-            responses.append({"group": group, "messages": messages})
-        await update_listener()  # Ensure the listener is up-to-date
-        return {"groups": responses}
+            try:
+                # Verify group on Telegram
+                entity = await telegram_client.get_entity(group["username"])
+                if entity:
+                    # Serialize the group document
+                    valid_groups.append(serialize_mongo_document(group))
+            except Exception:
+                # Skip groups that are invalid or banned on Telegram
+                continue
+
+        await update_listener()  # Refresh the listener with updated groups
+        return {"groups": valid_groups}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -202,30 +214,64 @@ async def bulk_add_from_file(file: UploadFile = File(...)):
 async def get_group(username: str):
     """
     Fetch a group and its associated messages by username.
+    - Verify group validity on Telegram.
+    - Scrape missing historical messages if necessary.
     :param username: The username of the group.
-    :return: Group details and messages.
+    :return: Updated group details and messages.
     """
     try:
-        # Remove "@" if included in the username
         clean_username = username.lstrip("@")
 
-        # Fetch group details
+        # Fetch group details from the database
         group = await groups_collection.find_one({"username": clean_username})
         if not group:
-            raise HTTPException(status_code=404, detail="Group not found")
+            raise HTTPException(
+                status_code=404, detail="Group not found in the database")
+
+        try:
+            # Verify group on Telegram
+            entity = await telegram_client.get_entity(clean_username)
+            if not entity:
+                raise HTTPException(
+                    status_code=404, detail="Group is invalid or banned on Telegram")
+        except Exception:
+            raise HTTPException(
+                status_code=404, detail="Group is invalid or banned on Telegram")
 
         # Serialize the group document
         group = serialize_mongo_document(group)
 
-        # Fetch associated messages
-        messages = await messages_collection.find({"group_id": group.get("group_id")}).to_list(length=100)
-        messages = [serialize_mongo_document(msg) for msg in messages]
+        # Fetch messages from Telegram
+        messages_in_telegram = []
+        async for message in telegram_client.iter_messages(entity, limit=100):
+            messages_in_telegram.append({
+                "message_id": message.id,
+                "group_id": group.get("group_id"),
+                "text": message.text,
+                "date": message.date,
+                "sender_id": message.sender_id
+            })
 
-        await update_listener()  # Ensure the listener is up-to-date
+        # Fetch messages from the database
+        messages_in_db = await messages_collection.find({"group_id": group.get("group_id")}).to_list(length=100)
+        db_message_ids = {msg["message_id"] for msg in messages_in_db}
 
+        # Add missing messages to the database
+        new_messages = []
+        for msg in messages_in_telegram:
+            if msg["message_id"] not in db_message_ids:
+                await messages_collection.insert_one(msg)
+                new_messages.append(msg)
+
+        # Serialize the messages
+        messages_in_db.extend(new_messages)
+        serialized_messages = [serialize_mongo_document(
+            msg) for msg in messages_in_db]
+
+        await update_listener()  # Refresh the listener
         return {
             "group": group,
-            "messages": messages
+            "messages": serialized_messages
         }
 
     except Exception as e:
