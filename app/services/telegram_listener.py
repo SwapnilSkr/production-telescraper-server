@@ -39,6 +39,7 @@ async def process_message(event):
 async def update_listener():
     """
     Update the listener to reflect the current list of active groups.
+    Validate groups on Telegram and remove invalid or banned ones.
     """
     global monitored_groups
     print("Updating listener with current active groups...")
@@ -48,13 +49,29 @@ async def update_listener():
         active_groups = await groups_collection.find({"is_active": True}).to_list(length=100)
         new_group_usernames = [group["username"] for group in active_groups]
 
+        # Validate groups on Telegram
+        valid_groups = []
+        for username in new_group_usernames:
+            try:
+                entity = await telegram_client.get_entity(username)
+                if entity:  # If Telegram validates the group
+                    valid_groups.append(username)
+            except Exception:
+                print(
+                    f"Group '{username}' is invalid or banned on Telegram. Removing it...")
+
+                # Deactivate the group in the database
+                await groups_collection.update_one(
+                    {"username": username}, {"$set": {"is_active": False}}
+                )
+
         # Check if there are any changes in monitored groups
-        if set(new_group_usernames) != set(monitored_groups):
+        if set(valid_groups) != set(monitored_groups):
             # Remove old listeners if any
             telegram_client.remove_event_handler(new_message_listener)
 
-            # Update monitored groups
-            monitored_groups = new_group_usernames
+            # Update monitored groups with valid ones
+            monitored_groups = valid_groups
 
             # Attach new listener with updated groups
             telegram_client.add_event_handler(
