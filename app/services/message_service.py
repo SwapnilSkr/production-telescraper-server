@@ -1,5 +1,5 @@
 from app.database import messages_collection, groups_collection
-from datetime import datetime
+from datetime import datetime, timezone
 from app.telegram_client import telegram_client
 from telethon.errors import FloodWaitError
 import asyncio
@@ -48,7 +48,7 @@ async def scrape_historical_messages(username: str):
                 "media": message.media is not None,
                 "edited": message.edit_date is not None,
                 "edit_date": message.edit_date,
-                "created_at": datetime.utcnow()
+                "created_at": datetime.now(timezone.utc)
             }
 
             # Insert into the database

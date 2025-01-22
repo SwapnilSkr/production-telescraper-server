@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 from app.database import groups_collection, messages_collection
 from app.telegram_client import telegram_client
 from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
+from app.middlewares.auth_middleware import isAuthenticated
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel
 from telethon.errors import FloodWaitError
@@ -102,7 +103,7 @@ async def add_group(group: Group):
             if hasattr(entity, "participants_count")
             else None,
             "is_active": True,
-            "created_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
         }
 
         await groups_collection.update_one(
@@ -179,7 +180,7 @@ async def bulk_add_from_file(file: UploadFile = File(...)):
                             if hasattr(entity, "participants_count")
                             else None,
                             "is_active": True,
-                            "created_at": datetime.utcnow(),
+                            "created_at": datetime.now(timezone.utc),
                         }
                         await groups_collection.update_one(
                             {"username": group_data["username"]},
@@ -324,13 +325,16 @@ async def reactivate_group(username: str):
 
 
 @router.post("/groups/{username}/scrape_historical_data")
-async def scrape_historical_data(username: str, limit: int = 100):
+async def scrape_historical_data(username: str, limit: int = 100, isAuthenticated: bool = Depends(isAuthenticated)):
     """
     Scrape historical messages from a group and store them in the database.
     :param username: The username of the group.
     :param limit: The maximum number of messages to scrape (default: 100).
     """
     try:
+        if not isAuthenticated:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         clean_username = username.lstrip("@")
 
         # Fetch group details from the database
@@ -364,7 +368,7 @@ async def scrape_historical_data(username: str, limit: int = 100):
                     "date": message.date,
                     "sender_id": message.sender_id,
                     "media": message.media is not None,
-                    "created_at": datetime.utcnow(),
+                    "created_at": datetime.now(timezone.utc),
                 }
 
                 # Save the message to the database

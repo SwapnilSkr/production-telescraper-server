@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from app.telegram_client import telegram_client
 from app.services.message_service import scrape_historical_messages
 from app.database import groups_collection
@@ -21,7 +21,7 @@ async def register_or_update_group(username: str):
             "member_count": entity.participants_count if hasattr(entity, "participants_count") else None,
             "group_id": entity.id,
             "is_active": True,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         }
 
         # Insert or update group in the database

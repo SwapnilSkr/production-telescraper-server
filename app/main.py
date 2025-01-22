@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from app.telegram_client import telegram_client
 from contextlib import asynccontextmanager
-from app.routers import messages, groups, categories
+from app.routers import messages, groups, categories, auth
 from app.services.telegram_listener import update_listener
 
 
@@ -27,6 +27,7 @@ async def app_lifespan(app: FastAPI):
 app = FastAPI(lifespan=app_lifespan)
 
 # Include routers for API endpoints
+app.include_router(auth.router)
 app.include_router(messages.router)
 app.include_router(groups.router)
 app.include_router(categories.router)

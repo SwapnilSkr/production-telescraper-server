@@ -2,7 +2,7 @@ from telethon import events
 from telethon.errors import FloodWaitError
 from app.telegram_client import telegram_client
 from app.database import groups_collection, messages_collection, tags_collection, categories_collection
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import os
 from openai import OpenAI
@@ -120,7 +120,7 @@ async def save_media_to_storage(message):
             return None  # No media to save
 
         # Define the file path
-        media_path = f"media/{message.id}_{datetime.utcnow().timestamp()}"
+        media_path = f"media/{message.id}_{datetime.now(timezone.utc).timestamp()}"
         os.makedirs(os.path.dirname(media_path), exist_ok=True)
 
         # Download the media file
@@ -180,7 +180,7 @@ async def process_message(event):
                 "file": file_url,
                 "category": category,
                 "tags": tags,  # Save generated tags with the message document
-                "created_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
             }
 
             result = await messages_collection.update_one(

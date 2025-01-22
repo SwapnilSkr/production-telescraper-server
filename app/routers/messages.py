@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.database import messages_collection, groups_collection, tags_collection, categories_collection
 from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
@@ -42,7 +42,7 @@ async def get_messages(username: str, minutes: int):
             )
 
         # Calculate the cutoff time
-        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
         # Query messages within the cutoff time
         messages = await messages_collection.find(

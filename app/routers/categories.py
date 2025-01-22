@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 from app.database import categories_collection
 from app.utils.serialize_mongo import serialize_mongo_document
@@ -32,8 +32,8 @@ async def add_category(category: Category):
         category_doc = {
             "name": category_name_upper,
             "description": category.description,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc)
         }
 
         # Insert into the database
@@ -64,7 +64,7 @@ async def edit_category(category_id: str, category: Category):
             {"$set": {
                 "name": category_name_upper,
                 "description": category.description,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             }}
         )
 
