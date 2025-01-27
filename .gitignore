@@ -36,3 +36,6 @@ dist/
 # Miscellaneous
 .DS_Store  # macOS Finder file
 Thumbs.db  # Windows thumbnail cache
+
+# EC2 Key Pair
+telescope_key.*
