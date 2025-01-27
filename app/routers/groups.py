@@ -115,7 +115,7 @@ def get_extension_from_message(message):
     return None
 
 
-async def download_media_with_extension(message, retries=5, backoff_factor=2, max_size_mb=10):
+async def download_media_with_extension(message, retries=5, backoff_factor=2, max_size_mb=210):
     """
     Download media from Telegram with retry logic, dynamically determining the file extension.
     Skip files larger than a specified size (in MB).
@@ -177,11 +177,11 @@ async def multipart_upload_to_s3(file_path: str, s3_key: str, bucket_name: str, 
     try:
         # Check file size
         file_size = os.path.getsize(file_path)
-        max_file_size = 15 * 1024 * 1024  # 20 MB limit
+        max_file_size = 210 * 1024 * 1024  # 210 MB limit
 
         if file_size > max_file_size:
             print(
-                f"File {file_path} exceeds the 20 MB size limit. Skipping upload.")
+                f"File {file_path} exceeds the 210 MB size limit. Skipping upload.")
             return None
 
         # Create an S3 client for the specified region
