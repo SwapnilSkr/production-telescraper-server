@@ -11,7 +11,7 @@ from apscheduler.triggers.date import DateTrigger
 import boto3
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from mimetypes import guess_extension
-from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, CLIENT_URL
 import logging
 import os
 import asyncio
@@ -355,7 +355,7 @@ async def app_lifespan(app: FastAPI):
 
 # Create FastAPI app with lifespan context manager
 app = FastAPI(lifespan=app_lifespan)
-ALLOWED_ORIGINS = ["http://localhost:3000"]
+ALLOWED_ORIGINS = [CLIENT_URL]
 
 app.add_middleware(
     CORSMiddleware,
