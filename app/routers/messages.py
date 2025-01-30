@@ -4,6 +4,8 @@ from app.database import messages_collection, groups_collection, tags_collection
 from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
 from app.telegram_client import telegram_client
+import os
+import re
 
 router = APIRouter()
 
@@ -82,20 +84,26 @@ async def search_messages(
     category: str | None = None,
     tag: str | None = None,
     keyword: str | None = None,
-    limit: int = 100,
+    sortOrder: str = "latest",  # Sorting order: "latest" (default) or "oldest"
+    page: int = 1,  # Pagination
+    limit: int = 10,  # Number of items per page
 ):
     """
-    Search and filter messages based on various criteria:
-    1. Sort messages in descending order of created_at.
-    2. Filter messages within a date range (start_date and end_date).
-    3. Filter messages by group name.
-    4. Filter messages by categories.
-    5. Filter messages by tags.
-    6. Search for a keyword across group names, categories, tags, and message text.
+    Search messages using keyword logic:
+    - If keyword has no space, match it as a prefix (until a space is hit).
+    - If keyword has a space at the end, match it exactly.
+    - If keyword is entirely spaces, ignore search.
     """
+
     try:
-        # Build the query
-        query = {}
+        # Base query to ensure messages have content or media
+        query = {
+            "$or": [
+                {"text": {"$ne": ""}},  # Ensure the message has text content
+                # Ensure the message has media
+                {"media": {"$exists": True, "$ne": None}},
+            ]
+        }
 
         # Filter by date range
         if start_date and end_date:
@@ -127,52 +135,87 @@ async def search_messages(
                 raise HTTPException(status_code=404, detail="Tag not found")
             query["tags"] = tag_doc.get("tag")
 
-        # Filter by keyword
+        # **Keyword Search Logic**
         if keyword:
-            keyword_filter = []
+            keyword = keyword.strip()  # Remove leading/trailing spaces
 
-            # Search in group names
-            group_docs = await groups_collection.find({"username": {"$regex": keyword, "$options": "i"}}).to_list(length=100)
-            group_ids = [group_doc.get("group_id") for group_doc in group_docs]
-            if group_ids:
-                keyword_filter.append({"group_id": {"$in": group_ids}})
+            if keyword == "":  # Ignore empty searches
+                raise HTTPException(
+                    status_code=400, detail="Invalid search keyword")
 
-            # Search in categories
-            category_docs = await categories_collection.find({"name": {"$regex": keyword, "$options": "i"}}).to_list(length=100)
-            category_names = [category_doc.get(
-                "name") for category_doc in category_docs]
-            if category_names:
-                keyword_filter.append({"category": {"$in": category_names}})
+            if keyword.endswith(" "):
+                # **Exact word match** (if keyword has space at the end)
+                query["text"] = {
+                    "$regex": f"\\b{re.escape(keyword.strip())}\\b", "$options": "i"}
+            else:
+                # **Prefix match until a space is hit**
+                query["text"] = {
+                    "$regex": f"\\b{re.escape(keyword)}[^ ]*", "$options": "i"}
 
-            # Search in tags
-            tag_docs = await tags_collection.find({"tag": {"$regex": keyword, "$options": "i"}}).to_list(length=100)
-            tag_names = [tag_doc.get("tag") for tag_doc in tag_docs]
-            if tag_names:
-                keyword_filter.append({"tags": {"$in": tag_names}})
+        # Sorting order
+        sort_order = -1 if sortOrder == "latest" else 1
 
-            # Search in message text
-            keyword_filter.append(
-                {"text": {"$regex": keyword, "$options": "i"}})
+        # Get total message count
+        total_messages = await messages_collection.count_documents(query)
 
-            # Combine all keyword filters with an OR condition
-            query["$or"] = keyword_filter
+        # Paginate messages
+        messages_cursor = messages_collection.find(query).sort("date", sort_order).skip(
+            (page - 1) * limit
+        ).limit(limit)
 
-        # Query messages
-        messages_cursor = messages_collection.find(
-            query).sort("date", -1).limit(limit)
-        messages = await messages_cursor.to_list(length=limit)
+        # Fetch all messages in the range
+        messages = await messages_cursor.to_list(None)
 
-        # Serialize messages
-        serialized_messages = [
-            serialize_mongo_document(msg) for msg in messages
-        ]
+        # Fetch group titles
+        group_ids = list(set(msg["group_id"] for msg in messages))
+        groups = await groups_collection.find({"group_id": {"$in": group_ids}}).to_list(None)
+        group_map = {group["group_id"]: group["title"] for group in groups}
 
-        return {"messages": serialized_messages}
+        # Helper function for media type classification
+        def classify_media(media_url):
+            if not media_url:
+                return None
+            media_types = {
+                "image": [".jpg", ".jpeg", ".png", ".gif", ".webp"],
+                "video": [".mp4", ".mkv", ".avi", ".mov"],
+            }
+            extension = os.path.splitext(media_url)[-1].lower()
+            for media_type, extensions in media_types.items():
+                if extension in extensions:
+                    return media_type
+            return "file"
 
-    except HTTPException as e:
-        # Raise HTTP exceptions as-is
-        raise e
+        # Format messages for response
+        formatted_messages = []
+        for msg in messages:
+            media_url = msg.get("media", None)
+            media_type = classify_media(media_url)
+            media_obj = None
+            if media_url:
+                if media_type == "image":
+                    media_obj = {"type": "image",
+                                 "url": media_url, "alt": "Image content"}
+                elif media_type == "video":
+                    media_obj = {"type": "video", "url": media_url,
+                                 "thumbnail": "Telegram Video"}
+                else:
+                    media_obj = {"type": "file", "url": media_url,
+                                 "name": os.path.basename(media_url)}
+
+            formatted_messages.append({
+                "id": str(msg["_id"]),  # Convert MongoDB ObjectId to string
+                "channel": group_map.get(msg["group_id"], "Unknown Group"),
+                "timestamp": msg["date"].isoformat(),
+                "content": msg["text"] or "No content",
+                "tags": msg.get("tags", ["no tags found"]),
+                "media": media_obj if media_url else None,
+            })
+
+        return {
+            "messages": formatted_messages,
+            "total_pages": (total_messages // limit) + (1 if total_messages % limit > 0 else 0),
+            "current_page": page,
+        }
 
     except Exception as e:
-        # Catch-all for unexpected errors
         raise HTTPException(status_code=500, detail=str(e))

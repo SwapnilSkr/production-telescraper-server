@@ -231,14 +231,14 @@ async def update_listener():
         # Check if there are any changes in monitored groups
         if set(valid_groups) != set(monitored_groups):
             print("Removing old listeners...")
-            telegram_client.remove_event_handler(new_message_listener)
+            # telegram_client.remove_event_handler(new_message_listener)
 
             monitored_groups = valid_groups
 
             print(f"Attaching listeners for groups: {monitored_groups}")
-            telegram_client.add_event_handler(
-                new_message_listener, events.NewMessage(chats=monitored_groups)
-            )
+            # telegram_client.add_event_handler(
+            #     new_message_listener, events.NewMessage(chats=monitored_groups)
+            # )
             print(f"Updated monitored groups: {monitored_groups}")
         else:
             print("No changes in monitored groups.")
@@ -255,14 +255,14 @@ async def update_listener():
         print(f"Error updating listener: {e}")
 
 
-async def new_message_listener(event):
-    """
-    Handle new messages for monitored groups.
-    """
-    try:
-        chat = await event.get_chat()
-        print(
-            f"New message detected in group {chat.username}: {event.message.text[:50]}")
-        await process_message(event)
-    except Exception as e:
-        print(f"Error in new_message_listener: {e}")
+# async def new_message_listener(event):
+#     """
+#     Handle new messages for monitored groups.
+#     """
+#     try:
+#         chat = await event.get_chat()
+#         print(
+#             f"New message detected in group {chat.username}: {event.message.text[:50]}")
+#         await process_message(event)
+#     except Exception as e:
+#         print(f"Error in new_message_listener: {e}")

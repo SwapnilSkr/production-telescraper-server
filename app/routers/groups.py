@@ -3,7 +3,7 @@ from botocore.exceptions import NoCredentialsError, ClientError
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from app.database import groups_collection, messages_collection
+from app.database import groups_collection, messages_collection, categories_collection
 from app.telegram_client import telegram_client
 from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
@@ -12,9 +12,14 @@ from telethon.tl.types import Channel, MessageMediaPhoto, MessageMediaDocument
 from mimetypes import guess_extension
 from telethon.errors import FloodWaitError
 from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_BUCKET_NAME
+from app.config import OPENAI_API_KEY
+from openai import OpenAI
 import asyncio
 import re
 import os
+
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 router = APIRouter()
 s3_client = boto3.client(
@@ -31,6 +36,51 @@ os.makedirs(temp_media_dir, exist_ok=True)
 
 # Semaphore to limit parallel uploads
 semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent uploads
+
+
+async def categorize_group_with_gpt(messages_text):
+    """
+    Categorize a group based on the content of the last 200 messages using OpenAI's GPT-4o.
+    """
+    try:
+        prompt = (
+            "You are an AI trained to categorize Telegram groups based on their recent messages. "
+            "Analyze the following messages from a group and determine the type of this group. These messages are a group which discusses about cyber crimes, hacking, and other illegal activities."
+            "Here are some example categories: Cybercrime, Hacktivist, APT."
+            "If the group doesn’t fit into any of these, create a new category where the first letter will be Uppercase and rest in lowercase and provide only the category name as output. "
+            "Consider keywords, tone, and subject matter to determine the group's primary theme.\n\n"
+            f"Recent messages:\n{messages_text}\n\n"
+            "Provide ONLY the category name in with first letter as Uppercase and the rest as lowercase as the response and nothing else."
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        category = response.choices[0].message.content.strip()
+        return category
+
+    except Exception as e:
+        print(f"Error categorizing group with GPT: {e}")
+        return "UNCATEGORIZED"  # Fallback category
+
+
+async def determine_group_status(last_message_date):
+    """
+    Determine if a group is active or dormant based on the last message date.
+    """
+    if not last_message_date:
+        return "dormant"  # No messages found, consider dormant
+
+    # Convert last message date to UTC if needed
+    last_message_date = last_message_date.replace(
+        tzinfo=timezone.utc) if last_message_date.tzinfo is None else last_message_date
+
+    # If the last message is older than 60 days, mark it as dormant
+    if (datetime.now(timezone.utc) - last_message_date).days > 60:
+        return "dormant"
+    return "active"
 
 
 async def upload_to_s3_with_bucket_and_region(file_path: str, s3_key: str, bucket_name: str, region: str) -> str:
@@ -296,6 +346,34 @@ async def get_group_with_messages(username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def update_category_collection(group_id, category_name):
+    """
+    Add the group_id to the corresponding category in `categories_collection`.
+    If the category doesn't exist, create it.
+    """
+    try:
+        # Check if the category exists
+        category = await categories_collection.find_one({"category_name": category_name})
+
+        if category:
+            # If the category exists, update the groups array
+            if group_id not in category["groups"]:
+                await categories_collection.update_one(
+                    {"category_name": category_name},
+                    {"$addToSet": {"groups": group_id}}  # Ensures no duplicates
+                )
+        else:
+            # If category doesn't exist, create a new one
+            new_category = {
+                "category_name": category_name,
+                "groups": [group_id]
+            }
+            await categories_collection.insert_one(new_category)
+
+    except Exception as e:
+        print(f"Error updating category collection: {e}")
+
+
 @router.get("/groups")
 async def get_groups():
     """
@@ -318,6 +396,90 @@ async def get_groups():
 
         await update_listener()  # Refresh the listener with updated groups
         return {"groups": valid_groups}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/groups/search")
+async def search_groups(
+    keyword: str | None = None,
+    category: str | None = None,
+    page: int = 1,
+    limit: int = 10
+):
+    """
+    Search groups by keyword (title) and category (group_type) with pagination.
+    - Retrieves message count per group.
+    - Provides last message content and timestamp.
+    """
+
+    try:
+        # Base query
+        query = {}
+
+        # **Keyword Search in Group Title**
+        if keyword:
+            keyword = keyword.strip()  # Remove leading/trailing spaces
+            if keyword == "":
+                raise HTTPException(
+                    status_code=400, detail="Invalid search keyword")
+
+            if keyword.endswith(" "):
+                # **Exact word match**
+                query["title"] = {
+                    "$regex": f"\\b{re.escape(keyword.strip())}\\b", "$options": "i"}
+            else:
+                # **Prefix match**
+                query["title"] = {
+                    "$regex": f"\\b{re.escape(keyword)}[^ ]*", "$options": "i"}
+
+        # **Category Filter**
+        if category:
+            query["type"] = category
+
+        # **Total groups count for pagination**
+        total_groups = await groups_collection.count_documents(query)
+
+        # **Pagination: Fetch groups**
+        groups_cursor = groups_collection.find(
+            query).skip((page - 1) * limit).limit(limit)
+        groups = await groups_cursor.to_list(None)
+
+        formatted_groups = []
+        for group in groups:
+            group_id = group["group_id"]
+
+            # **Get Message Count**
+            message_count = await messages_collection.count_documents({"group_id": group_id})
+
+            # **Get Last Message**
+            last_message = await messages_collection.find_one(
+                {"group_id": group_id},
+                sort=[("date", -1)]
+            )
+
+            last_message_details = {
+                "content": last_message["text"] if last_message and last_message.get("text") else "No messages found",
+                "timestamp": last_message["date"].isoformat() if last_message else None,
+            }
+
+            # **Format Group Object**
+            formatted_groups.append({
+                "id": str(group["_id"]),  # Convert MongoDB ObjectId to string
+                "name": group["title"],
+                "type": group["type"],
+                # Default to 'Unknown' if missing
+                "status": group.get("status", "Unknown"),
+                "messageCount": message_count,
+                "lastMessage": last_message_details
+            })
+
+        return {
+            "groups": formatted_groups,
+            "total_pages": (total_groups // limit) + (1 if total_groups % limit > 0 else 0),
+            "current_page": page,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -375,6 +537,8 @@ async def add_group(group: dict):
             else None,
             "is_active": True,
             "created_at": datetime.now(timezone.utc),
+            "type": None,  # To be assigned later
+            "status": None,  # To be assigned later
         }
 
         await groups_collection.update_one(
@@ -390,10 +554,16 @@ async def add_group(group: dict):
         # Semaphore to limit parallel uploads
         semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent uploads
 
+        last_200_messages = []
+        last_message_date = None
+
         async def handle_message(message, bucket_index):
             """
             Handle a single message: download media, upload to S3, and save to the database.
             """
+            nonlocal last_message_date  # Capture last message date
+            last_message_date = message.date
+
             message_doc = {
                 "message_id": message.id,
                 "group_id": entity.id,
@@ -405,20 +575,18 @@ async def add_group(group: dict):
                 "created_at": datetime.now(timezone.utc),
             }
 
-            if message.media:
+            if message.text:
+                last_200_messages.append(message_doc)
 
-                # Download media with retry
+            if message.media:
                 downloaded_file = await download_media_with_extension(message)
                 if downloaded_file:
-                    async with semaphore:  # Limit concurrent uploads
-                        # Get the current bucket and region for this batch
+                    async with semaphore:
                         bucket_name = list(buckets.keys())[
                             bucket_index % len(buckets)]
                         region = buckets[bucket_name]
                         s3_key = f"{entity.id}/{downloaded_file['file_name']}"
 
-                        # Upload to the current bucket and region
-                        # Inside the handle_message function
                         s3_url = await multipart_upload_to_s3(downloaded_file['file_path'], s3_key, bucket_name, region)
 
                         if s3_url:
@@ -426,40 +594,50 @@ async def add_group(group: dict):
                                 f"Media uploaded to S3 bucket {bucket_name}: {s3_url}")
                             message_doc["media"] = s3_url
 
-                        # Remove the file after uploading
                         os.remove(downloaded_file["file_path"])
 
-            # Save the message to the database
             await messages_collection.update_one(
                 {"message_id": message_doc["message_id"],
-                 "group_id": message_doc["group_id"]},
+                    "group_id": message_doc["group_id"]},
                 {"$set": message_doc},
                 upsert=True,
             )
 
         # Scrape historical messages and process them
         tasks = []
-        bucket_index = 0  # Start with the first bucket
+        bucket_index = 0
 
-        async for message in telegram_client.iter_messages(entity):
+        async for message in telegram_client.iter_messages(entity, limit=200):
             tasks.append(handle_message(message, bucket_index))
-            bucket_index += 1  # Increment bucket index for the next batch
-
-            if len(tasks) >= 50:  # Batch size
+            bucket_index += 1
+            if len(tasks) >= 50:
                 await asyncio.gather(*tasks)
                 tasks = []
-                await asyncio.sleep(10)  # Delay between batches
+                await asyncio.sleep(10)
 
-        # Finalize remaining tasks
         if tasks:
             await asyncio.gather(*tasks)
 
-        # Add the group to the listener
+        # Categorize the group based on the last 200 messages
+        group_category = await categorize_group_with_gpt(last_200_messages)
+        group_status = await determine_group_status(last_message_date)
+
+        # Update the group in the database with the assigned category & status
+        await groups_collection.update_one(
+            {"group_id": entity.id},
+            {"$set": {"type": group_category, "status": group_status}}
+        )
+
+        # Store group ID in the appropriate category
+        await update_category_collection(entity.id, group_category)
+
         await update_listener()
 
         return {
-            "message": "Group added successfully, historical messages scraped, and listener updated.",
+            "message": "Group added successfully, categorized, and listener updated.",
             "group": group_data,
+            "type": group_category,
+            "status": group_status,
         }
 
     except Exception as e:
@@ -784,3 +962,71 @@ async def scrape_historical_data(username: str, limit: int = 100, isAuthenticate
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/groups/update_types_and_status")
+async def update_groups():
+    """
+    Updates all groups in the database:
+    - Assigns a type based on the last 200 messages using GPT
+    - Sets status as 'active' or 'dormant' based on last message timestamp
+    - Stores group type in categories_collection
+    """
+    try:
+        groups = await groups_collection.find({}).to_list(None)
+        updated_groups = []
+
+        async def process_group(group):
+            group_id = group["group_id"]
+
+            # Fetch last 200 messages (sorted by date)
+            messages = await messages_collection.find(
+                {"group_id": group_id},
+                sort=[("date", -1)],  # Sort by newest first
+                limit=200
+            ).to_list(None)
+
+            if not messages:
+                return None  # Skip if no messages exist for this group
+
+            # Concatenate messages for GPT analysis
+            messages_text = "\n".join([msg["text"] for msg in messages if msg["text"]])[
+                :5000]  # Truncate for GPT
+
+            # Determine group type
+            group_type = await categorize_group_with_gpt(messages_text)
+
+            # Determine active/dormant status
+            last_message_date = messages[0]["date"]
+            if last_message_date.tzinfo is None:
+                last_message_date = last_message_date.replace(
+                    tzinfo=timezone.utc)
+
+            days_since_last_message = (datetime.now(
+                timezone.utc) - last_message_date).days
+            group_status = "dormant" if days_since_last_message > 60 else "active"
+
+            # Update the group document
+            update_data = {"type": group_type, "status": group_status}
+            await groups_collection.update_one({"group_id": group_id}, {"$set": update_data})
+
+            # Update category collection
+            await update_category_collection(group_id, group_type)
+
+            updated_groups.append(
+                {"group_id": group_id, "type": group_type, "status": group_status})
+
+        # Process groups concurrently with a limit of 5 at a time
+        semaphore = asyncio.Semaphore(5)
+
+        async def process_group_with_semaphore(group):
+            async with semaphore:
+                await process_group(group)
+
+        await asyncio.gather(*[process_group_with_semaphore(group) for group in groups])
+
+        return {"message": "Groups updated successfully", "updated_groups": updated_groups}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error updating groups: {str(e)}")
