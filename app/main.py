@@ -1,5 +1,6 @@
 from app.database import groups_collection, messages_collection
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.telegram_client import telegram_client
 from contextlib import asynccontextmanager
@@ -397,6 +398,15 @@ async def connect(sid, environ):
 @sio.on('disconnect')
 async def disconnect(sid):
     print(f"Client disconnected: {sid}")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"message": "An unexpected error occurred."}
+    )
 
 
 @app.post("/trigger-update")
