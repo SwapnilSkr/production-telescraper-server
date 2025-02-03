@@ -37,6 +37,6 @@ def create_user_token(user: dict):
     """Create a JWT token for a user."""
     access_token = create_access_token(
         data={"sub": user["email"]},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        expires_delta=timedelta(minutes=int(ACCESS_TOKEN_EXPIRE_MINUTES)),
     )
     return access_token
