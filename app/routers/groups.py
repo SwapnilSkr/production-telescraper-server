@@ -374,14 +374,14 @@ async def update_category_collection(group_id, category_name):
         print(f"Error updating category collection: {e}")
 
 
-@router.get("/groups")
-async def get_groups():
+@router.get("/get_valid_groups")
+async def get_valid_groups():
     """
     Fetch all groups from the database and verify their validity on Telegram.
     Only return groups that are active and recognized by Telegram.
     """
     try:
-        groups = await groups_collection.find().to_list(length=100)
+        groups = await groups_collection.find().to_list(None)
         valid_groups = []
 
         for group in groups:
@@ -396,6 +396,20 @@ async def get_groups():
 
         await update_listener()  # Refresh the listener with updated groups
         return {"groups": valid_groups}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/groups")
+async def get_groups():
+    """
+    Fetch all groups from the database.
+    """
+    try:
+        groups = await groups_collection.find().to_list(None)
+        await update_listener()  # Refresh the listener with updated groups
+        return {"groups": [serialize_mongo_document(group) for group in groups]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -487,7 +501,7 @@ async def search_groups(
                 }
 
             last_message_details = {
-                "content": last_message["text"] if last_message and last_message.get("text") else "No valid messages found",
+                "content": last_message["text"] if last_message and last_message.get("text") else "No text messages found",
                 "media": media_obj,
                 "timestamp": last_message["date"].isoformat() if last_message else None,
             }

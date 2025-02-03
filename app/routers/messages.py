@@ -1,4 +1,6 @@
 from fastapi import APIRouter, HTTPException
+from typing import List
+from fastapi import Query
 from datetime import datetime, timedelta, timezone
 from app.database import messages_collection, groups_collection, tags_collection, categories_collection
 from app.services.telegram_listener import update_listener
@@ -52,7 +54,7 @@ async def get_messages(username: str, minutes: int):
                 "group_id": group_id,
                 "date": {"$gte": cutoff_time},
             }
-        ).to_list(length=100)
+        ).to_list(None)
 
         # Serialize messages
         serialized_messages = [
@@ -80,7 +82,7 @@ async def get_messages(username: str, minutes: int):
 async def search_messages(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
-    group_name: str | None = None,
+    group_ids: List[str] | None = Query(None, alias="group_ids"),
     category: str | None = None,
     tag: str | None = None,
     keyword: str | None = None,
@@ -99,12 +101,12 @@ async def search_messages(
         # Base query to ensure messages have content or media
         query = {
             "$or": [
-                {"text": {"$ne": ""}},  # Ensure the message has text content
-                # Ensure the message has media
+                {"text": {"$ne": ""}},
                 {"media": {"$exists": True, "$ne": None}},
             ]
         }
 
+        print(f"group_ids: {group_ids}")
         # Filter by date range
         if start_date and end_date:
             query["date"] = {"$gte": start_date, "$lte": end_date}
@@ -113,12 +115,22 @@ async def search_messages(
         elif end_date:
             query["date"] = {"$lte": end_date}
 
-        # Filter by group name
-        if group_name:
-            group = await groups_collection.find_one({"username": group_name.lstrip("@")})
-            if not group:
-                raise HTTPException(status_code=404, detail="Group not found")
-            query["group_id"] = group.get("group_id")
+        if group_ids:
+            group_ids = [int(group_id) for group_id in group_ids]
+            matching_groups = await groups_collection.find(
+                {"group_id": {"$in": group_ids}}
+            ).to_list(None)
+
+            print(f"matching_groups: {matching_groups}")
+
+            if not matching_groups:
+                raise HTTPException(
+                    status_code=404, detail="No matching groups found")
+
+            # Add group_ids to the query
+            query["group_id"] = {"$in": [group["group_id"]
+                                         for group in matching_groups]}
+            print(f"query: {query['group_id']}")
 
         # Filter by category
         if category:
@@ -159,6 +171,7 @@ async def search_messages(
         total_messages = await messages_collection.count_documents(query)
 
         # Paginate messages
+        print(f"query: {query}")
         messages_cursor = messages_collection.find(query).sort("date", sort_order).skip(
             (page - 1) * limit
         ).limit(limit)
@@ -218,4 +231,5 @@ async def search_messages(
         }
 
     except Exception as e:
+        print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
