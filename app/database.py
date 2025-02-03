@@ -5,7 +5,7 @@ MONGO_CONNECTION_STRING = config("MONGO_CONNECTION_STRING")
 mongo_client = AsyncIOMotorClient(MONGO_CONNECTION_STRING)
 
 db = mongo_client["telegram_data_backup"]
-messages_collection = db["messages"]
+messages_collection = db.get_collection("messages")
 groups_collection = db["groups"]
 tags_collection = db["tags"]
 categories_collection = db["categories"]

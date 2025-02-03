@@ -411,7 +411,7 @@ async def search_groups(
     """
     Search groups by keyword (title) and category (group_type) with pagination.
     - Retrieves message count per group.
-    - Provides last message content and timestamp.
+    - Provides last valid message content and timestamp, including structured media.
     """
 
     try:
@@ -423,16 +423,19 @@ async def search_groups(
             keyword = keyword.strip()  # Remove leading/trailing spaces
             if keyword == "":
                 raise HTTPException(
-                    status_code=400, detail="Invalid search keyword")
+                    status_code=400, detail="Invalid search keyword"
+                )
 
             if keyword.endswith(" "):
                 # **Exact word match**
                 query["title"] = {
-                    "$regex": f"\\b{re.escape(keyword.strip())}\\b", "$options": "i"}
+                    "$regex": f"\\b{re.escape(keyword.strip())}\\b", "$options": "i"
+                }
             else:
                 # **Prefix match**
                 query["title"] = {
-                    "$regex": f"\\b{re.escape(keyword)}[^ ]*", "$options": "i"}
+                    "$regex": f"\\b{re.escape(keyword)}[^ ]*", "$options": "i"
+                }
 
         # **Category Filter**
         if category:
@@ -443,7 +446,8 @@ async def search_groups(
 
         # **Pagination: Fetch groups**
         groups_cursor = groups_collection.find(
-            query).skip((page - 1) * limit).limit(limit)
+            query
+        ).skip((page - 1) * limit).limit(limit)
         groups = await groups_cursor.to_list(None)
 
         formatted_groups = []
@@ -453,14 +457,38 @@ async def search_groups(
             # **Get Message Count**
             message_count = await messages_collection.count_documents({"group_id": group_id})
 
-            # **Get Last Message**
+            # **Get Last Valid Message (Text or Media)**
             last_message = await messages_collection.find_one(
-                {"group_id": group_id},
+                {
+                    "group_id": group_id,
+                    "$or": [
+                        {"text": {"$ne": ""}},  # Message has text
+                        # Message has media
+                        {"media": {"$exists": True, "$ne": None}}
+                    ]
+                },
                 sort=[("date", -1)]
             )
 
+            # **Determine Media Type**
+            media_obj = None
+            if last_message and last_message.get("media"):
+                media_url = last_message["media"]
+                if media_url.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                    media_type = "image"
+                elif media_url.endswith((".mp4", ".mkv", ".avi", ".mov")):
+                    media_type = "video"
+                else:
+                    media_type = "file"
+
+                media_obj = {
+                    "type": media_type,
+                    "url": media_url
+                }
+
             last_message_details = {
-                "content": last_message["text"] if last_message and last_message.get("text") else "No messages found",
+                "content": last_message["text"] if last_message and last_message.get("text") else "No valid messages found",
+                "media": media_obj,
                 "timestamp": last_message["date"].isoformat() if last_message else None,
             }
 

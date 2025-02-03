@@ -3,6 +3,8 @@ from app.schemas.user_schema import UserCreate, UserLogin, UserResponse
 from app.services.auth_service import create_user, authenticate_user, create_user_token
 from app.middlewares.auth_middleware import get_current_user
 from app.utils.serialize_mongo import serialize_mongo_document
+from datetime import datetime, timezone
+
 
 router = APIRouter()
 
@@ -30,7 +32,28 @@ async def login_user(user: UserLogin):
 
 @router.get("/user")
 async def get_user(get_current_user: dict = Depends(get_current_user)):
-    """Fetch the current user."""
+    """Fetch the current user along with remaining time for token expiration (in minutes)."""
     if not get_current_user:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"user": serialize_mongo_document(get_current_user)}
+
+    # Extract expiration timestamp (Unix timestamp)
+    exp_timestamp = get_current_user.get("exp")
+
+    if exp_timestamp:
+        # Convert expiration timestamp to UTC datetime
+        exp_datetime = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+
+        # Calculate remaining time in minutes
+        now = datetime.now(timezone.utc)
+        remaining_time = (exp_datetime - now).total_seconds() / 60
+
+        # Ensure it doesn't return negative values
+        remaining_time = max(0, round(remaining_time))
+    else:
+        exp_datetime = None
+        remaining_time = None
+
+    return {
+        "user": serialize_mongo_document(get_current_user),
+        "token_expiration": remaining_time  # Time left in minutes
+    }
