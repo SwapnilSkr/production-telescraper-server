@@ -419,6 +419,7 @@ async def get_groups():
 async def search_groups(
     keyword: str | None = None,
     category: str | None = None,
+    status: str | None = None,
     page: int = 1,
     limit: int = 10
 ):
@@ -454,6 +455,9 @@ async def search_groups(
         # **Category Filter**
         if category:
             query["type"] = category
+
+        if status:
+            query["status"] = status
 
         # **Total groups count for pagination**
         total_groups = await groups_collection.count_documents(query)

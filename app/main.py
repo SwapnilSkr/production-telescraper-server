@@ -6,6 +6,7 @@ from app.telegram_client import telegram_client
 from contextlib import asynccontextmanager
 from app.routers import messages, groups, categories, auth
 from app.services.telegram_listener import update_listener
+from app.utils.gpt_generations import generate_tags, save_tags
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta, timezone
 from apscheduler.triggers.date import DateTrigger
@@ -270,6 +271,13 @@ async def update_telegram_groups():
                     else:
                         media_url = None
 
+                    if message.text:
+                        # Generate tags for the message using GPT-4
+                        tags = await generate_tags(message.text)
+
+                        # Save unique tags to the database
+                        await save_tags(tags)
+
                     message_doc = {
                         "message_id": message.id,
                         "group_id": group["group_id"],
@@ -278,6 +286,7 @@ async def update_telegram_groups():
                         "sender_id": message.sender_id,
                         "created_at": datetime.now(timezone.utc),
                         "media": media_url if media_url else None,
+                        "tags": tags if tags else []
                     }
 
                     # Upsert the message
