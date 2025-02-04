@@ -29,8 +29,9 @@ async def generate_tags(message_text):
         "Given the following message, provide a list of up to 5 relevant tags that capture the main themes, "
         "keywords, and topics discussed. Prioritize using tags from the existing list if they are relevant: {existing_tags}. "
         "If none of the existing tags are suitable, create new ones. "
+        "Provide only the tags as responses without any additional text or explanation. Don't respond with any words or sentences. "
         "Tags should be concise, descriptive, lowercase, without hashes or special characters, and separated by commas. "
-        "Provide only the tags without any additional text or explanation. "
+        "Make sure you generate at least 5 relevant tags. "
         "Message: '{message_text}'"
     )
 

@@ -305,6 +305,7 @@ async def update_telegram_groups():
                         "timestamp": message_date.isoformat(),
                         "content": message.text or "No content",
                         "media": media_url if media_url else None,
+                        "tags": tags if tags else []
                     })
 
                 logger.info(f"Successfully updated group: {group['username']}")
