@@ -1079,6 +1079,28 @@ async def update_groups():
             status_code=500, detail=f"Error updating groups: {str(e)}")
 
 
+@router.patch("/groups/reactivate-all")
+async def reactivate_all_groups():
+    """
+    Reactivate all deactivated groups in the database.
+    """
+    try:
+        result = await groups_collection.update_many(
+            {"is_active": False},
+            {"$set": {"is_active": True}}
+        )
+        if result.modified_count == 0:
+            raise HTTPException(
+                status_code=404, detail="No groups were reactivated"
+            )
+
+        await update_listener()  # Refresh the listener
+        return {"message": "All groups reactivated successfully"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/test-email")
 async def test_email(email: str):
     try:
