@@ -13,7 +13,7 @@ from apscheduler.triggers.date import DateTrigger
 import boto3
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from mimetypes import guess_extension
-from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, CLIENT_URL
+from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, CLIENT_URL, CRON_JOB_DURATION
 import logging
 import os
 import asyncio
@@ -327,7 +327,8 @@ async def update_telegram_groups():
             })
 
         # Reschedule the next cron job in 20 minutes
-        next_run_time = datetime.now(timezone.utc) + timedelta(minutes=20)
+        next_run_time = datetime.now(
+            timezone.utc) + timedelta(minutes=CRON_JOB_DURATION)
         scheduler.add_job(
             update_telegram_groups,
             trigger=DateTrigger(run_date=next_run_time),
