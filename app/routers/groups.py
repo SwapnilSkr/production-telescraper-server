@@ -7,6 +7,7 @@ from app.database import groups_collection, messages_collection, categories_coll
 from app.telegram_client import telegram_client
 from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
+from app.utils.resend_email import send_email
 from app.middlewares.auth_middleware import isAuthenticated
 from telethon.tl.types import Channel, MessageMediaPhoto, MessageMediaDocument
 from mimetypes import guess_extension
@@ -1076,3 +1077,14 @@ async def update_groups():
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error updating groups: {str(e)}")
+
+
+@router.post("/test-email")
+async def test_email(email: str):
+    try:
+        email = send_email(email, "Test Email",
+                           "This is a test email from Telescope.")
+        print(email)
+        return {"message": "Test email sent successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

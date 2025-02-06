@@ -265,6 +265,8 @@ async def update_telegram_groups():
                         f"recorded at {message_date}, content: {message.text}"
                     )
 
+                    tags = None
+
                     if message.media:
                         media_url = await process_message_media(message, group["group_id"], bucket_index)
                         bucket_index += 1  # Increment bucket index for distributing uploads
