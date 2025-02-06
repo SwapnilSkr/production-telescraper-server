@@ -863,9 +863,9 @@ async def get_group(username: str):
                 raise HTTPException(
                     status_code=404, detail="Group is invalid or banned on Telegram"
                 )
-        except Exception:
+        except Exception as e:
             raise HTTPException(
-                status_code=404, detail="Group is invalid or banned on Telegram"
+                status_code=404, detail=f"Failed to validate group on Telegram: {str(e)}"
             )
 
         # Serialize the group document
