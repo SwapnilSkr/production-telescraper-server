@@ -328,7 +328,7 @@ async def update_telegram_groups():
 
         # Reschedule the next cron job in 20 minutes
         next_run_time = datetime.now(
-            timezone.utc) + timedelta(minutes=CRON_JOB_DURATION)
+            timezone.utc) + timedelta(minutes=int(CRON_JOB_DURATION))
         scheduler.add_job(
             update_telegram_groups,
             trigger=DateTrigger(run_date=next_run_time),
