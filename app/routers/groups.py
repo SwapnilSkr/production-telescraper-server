@@ -2,6 +2,7 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from pydantic import BaseModel
+from pymongo import UpdateOne
 from datetime import datetime, timezone
 from app.database import groups_collection, messages_collection, categories_collection
 from app.telegram_client import telegram_client
@@ -37,6 +38,22 @@ os.makedirs(temp_media_dir, exist_ok=True)
 
 # Semaphore to limit parallel uploads
 semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent uploads
+
+
+def serialize_reactions(reactions):
+    """
+    Converts Telethon ReactionCount objects to JSON serializable format.
+    """
+    if not reactions or not hasattr(reactions, "results"):
+        return None
+
+    return [
+        {
+            "emoji": reaction.reaction.emoticon if reaction.reaction else None,
+            "count": reaction.count,
+        }
+        for reaction in reactions.results
+    ]
 
 
 async def categorize_group_with_gpt(messages_text):
@@ -1108,5 +1125,81 @@ async def test_email(email: str):
                            "This is a test email from Telescope.")
         print(email)
         return {"message": "Test email sent successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/groups/update_messages/{username}")
+async def update_group_messages(username: str):
+    """
+    Update message documents for a specific group based on its username.
+    Updates the fields: views, reactions, reply_to in the messages collection.
+    """
+
+    try:
+        # Find the group associated with the provided username
+        group = await groups_collection.find_one({"username": username})
+
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+
+        group_id = group["group_id"]  # Extract the unique group_id
+
+        bulk_updates = []  # Store bulk update operations
+
+        async for message in telegram_client.iter_messages(username):
+            message_id = message.id
+
+            # Prepare update fields
+            update_fields = {}
+            if message.views is not None:
+                update_fields["views"] = message.views
+            if message.reactions:
+                update_fields["reactions"] = serialize_reactions(
+                    message.reactions)
+            if message.reply_to and hasattr(message.reply_to, "reply_to_msg_id"):
+                update_fields["reply_to"] = message.reply_to.reply_to_msg_id
+
+            # Only update if there are fields to update
+            if update_fields:
+                bulk_updates.append(
+                    UpdateOne(
+                        # Ensure the update applies only to the correct group
+                        {"message_id": message_id, "group_id": group_id},
+                        {"$set": update_fields}  # Update fields
+                    )
+                )
+
+        # Perform bulk update if there are updates to be made
+        if bulk_updates:
+            result = await messages_collection.bulk_write(bulk_updates)
+            return {
+                "updated_count": result.modified_count,
+                "message": f"Successfully updated {result.modified_count} messages in group '{username}'."
+            }
+
+        return {"message": "No updates were necessary."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/messages/remove_fields")
+async def remove_message_fields():
+    """
+    Remove 'views', 'reactions', and 'reply_to' fields from all message documents.
+    """
+    try:
+        # Perform bulk update to unset the fields
+        result = await messages_collection.update_many(
+            {},  # Update all documents
+            {"$unset": {"views": "", "reactions": "", "reply_to": ""}}
+        )
+
+        return {
+            "modified_count": result.modified_count,
+            "message": f"Successfully removed fields from {result.modified_count} messages."
+        }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
