@@ -379,28 +379,25 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-sio = socketio.AsyncServer(
-    async_mode='asgi',
-    cors_allowed_origins=[],  # Leave empty to prevent duplicate CORS headers
-    logger=False,
-    engineio_logger=False
-)
-
-# Create the ASGI app and wrap it with CORS middleware
-socket_app = socketio.ASGIApp(
-    socketio_server=sio,
-    other_asgi_app=app,
-    socketio_path='socket.io'
-)
-
 # Include routers for API endpoints
 app.include_router(auth.router)
 app.include_router(messages.router)
 app.include_router(groups.router)
 app.include_router(categories.router)
 
-# Socket.IO event handlers
-app.mount("/", socket_app)
+# Create Socket.IO server
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins=ALLOWED_ORIGINS,  # Use the same CORS origins as FastAPI
+    logger=False,
+    engineio_logger=False
+)
+
+# Create a separate socket app
+socket_app = socketio.ASGIApp(sio)
+
+# Mount the socket app at a specific path instead of root
+app.mount("/socket.io", socket_app)
 
 
 @sio.on('connect')
