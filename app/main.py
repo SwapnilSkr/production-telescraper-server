@@ -273,12 +273,12 @@ async def update_telegram_groups():
                     else:
                         media_url = None
 
-                    if message.text:
-                        # Generate tags for the message using GPT-4
-                        tags = await generate_tags(message.text)
+                    # if message.text:
+                    #     # Generate tags for the message using GPT-4
+                    #     tags = await generate_tags(message.text)
 
-                        # Save unique tags to the database
-                        await save_tags(tags)
+                    #     # Save unique tags to the database
+                    #     await save_tags(tags)
 
                     message_doc = {
                         "message_id": message.id,
