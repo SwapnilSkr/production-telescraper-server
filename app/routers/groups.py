@@ -671,7 +671,7 @@ async def add_group(group: dict):
         tasks = []
         bucket_index = 0
 
-        async for message in telegram_client.iter_messages(entity, limit=200):
+        async for message in telegram_client.iter_messages(entity, limit=None):
             tasks.append(handle_message(message, bucket_index))
             bucket_index += 1
             if len(tasks) >= 50:
