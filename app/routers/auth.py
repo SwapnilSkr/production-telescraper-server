@@ -37,7 +37,7 @@ async def get_user(get_current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     # Extract expiration timestamp (Unix timestamp)
-    exp_timestamp = get_current_user.get("exp")
+    exp_timestamp = get_current_user["exp"]
 
     if exp_timestamp:
         # Convert expiration timestamp to UTC datetime

@@ -8,7 +8,7 @@ security = HTTPBearer()
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Authenticate the current user via bearer token."""
     token = credentials.credentials
-    payload = decode_access_token(token)
+    payload = await decode_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return payload
