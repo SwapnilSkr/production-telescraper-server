@@ -1,10 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from datetime import datetime, timezone
 from bson import ObjectId
 from app.database import categories_collection
 from app.utils.serialize_mongo import serialize_mongo_document
-
+from app.middlewares.auth_middleware import get_current_user
 router = APIRouter()
 
 
@@ -14,11 +14,14 @@ class Category(BaseModel):
 
 
 @router.post("/categories")
-async def add_category(category: Category):
+async def add_category(category: Category, get_current_user: dict = Depends(get_current_user)):
     """
     Add a new category. Ensures the name is stored in uppercase.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Convert the category name to uppercase
         category_name_upper = category.name.upper()
 
@@ -47,11 +50,14 @@ async def add_category(category: Category):
 
 
 @router.put("/categories/{category_id}")
-async def edit_category(category_id: str, category: Category):
+async def edit_category(category_id: str, category: Category, get_current_user: dict = Depends(get_current_user)):
     """
     Edit an existing category. Ensures the name is stored in uppercase.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         if not ObjectId.is_valid(category_id):
             raise HTTPException(status_code=400, detail="Invalid category ID")
 
@@ -80,11 +86,14 @@ async def edit_category(category_id: str, category: Category):
 
 
 @router.delete("/categories/{category_id}")
-async def delete_category(category_id: str):
+async def delete_category(category_id: str, get_current_user: dict = Depends(get_current_user)):
     """
     Delete a category by its ID.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         if not ObjectId.is_valid(category_id):
             raise HTTPException(status_code=400, detail="Invalid category ID")
 
@@ -101,11 +110,14 @@ async def delete_category(category_id: str):
 
 
 @router.get("/categories")
-async def get_all_categories():
+async def get_all_categories(get_current_user: dict = Depends(get_current_user)):
     """
     Fetch all categories from the database.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Retrieve all categories from the database
         categories = await categories_collection.find().to_list(length=100)
 

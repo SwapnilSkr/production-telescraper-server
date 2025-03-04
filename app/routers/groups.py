@@ -9,7 +9,7 @@ from app.telegram_client import telegram_client
 from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
 from app.utils.resend_email import send_email
-from app.middlewares.auth_middleware import isAuthenticated
+from app.middlewares.auth_middleware import get_current_user, isAuthenticated
 from telethon.tl.types import Channel, MessageMediaPhoto, MessageMediaDocument
 from mimetypes import guess_extension
 from telethon.errors import FloodWaitError
@@ -420,11 +420,13 @@ async def get_valid_groups():
 
 
 @router.get("/groups")
-async def get_groups():
+async def get_groups(get_current_user: dict = Depends(get_current_user)):
     """
     Fetch all groups from the database.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
         groups = await groups_collection.find().to_list(None)
         await update_listener()  # Refresh the listener with updated groups
         return {"groups": [serialize_mongo_document(group) for group in groups]}
@@ -439,7 +441,8 @@ async def search_groups(
     category: str | None = None,
     status: str | None = None,
     page: int = 1,
-    limit: int = 10
+    limit: int = 10,
+    get_current_user: dict = Depends(get_current_user)
 ):
     """
     Search groups by keyword (title) and category (group_type) with pagination.
@@ -448,6 +451,8 @@ async def search_groups(
     """
 
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
         # Base query
         query = {}
 
@@ -858,12 +863,15 @@ async def bulk_add_from_file(file: UploadFile = File(...)):
 
 
 @router.get("/groups/{username}")
-async def get_group(username: str):
+async def get_group(username: str, get_current_user: dict = Depends(get_current_user)):
     """
     Fetch a group and its associated messages by username.
     Only display the messages already added to the database.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         clean_username = username.lstrip("@")
 
         # Fetch group details from the database
@@ -905,9 +913,12 @@ async def get_group(username: str):
 
 
 @router.patch("/groups/{username}/deactivate")
-async def deactivate_group(username: str):
+async def deactivate_group(username: str, get_current_user: dict = Depends(get_current_user)):
     """Deactivate (soft delete) a group."""
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         clean_username = username.lstrip("@")
         group = await groups_collection.find_one({"username": clean_username})
         if not group:
@@ -931,9 +942,12 @@ async def deactivate_group(username: str):
 
 
 @router.patch("/groups/{username}/reactivate")
-async def reactivate_group(username: str):
+async def reactivate_group(username: str, get_current_user: dict = Depends(get_current_user)):
     """Reactivate a previously deactivated group."""
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         clean_username = username.lstrip("@")
         group = await groups_collection.find_one({"username": clean_username})
         if not group:
@@ -957,14 +971,14 @@ async def reactivate_group(username: str):
 
 
 @router.post("/groups/{username}/scrape_historical_data")
-async def scrape_historical_data(username: str, limit: int = 100, isAuthenticated: bool = Depends(isAuthenticated)):
+async def scrape_historical_data(username: str, limit: int = 100, get_current_user: dict = Depends(get_current_user)):
     """
     Scrape historical messages from a group and store them in the database.
     :param username: The username of the group.
     :param limit: The maximum number of messages to scrape (default: 100).
     """
     try:
-        if not isAuthenticated:
+        if not get_current_user:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
         clean_username = username.lstrip("@")
@@ -1029,7 +1043,7 @@ async def scrape_historical_data(username: str, limit: int = 100, isAuthenticate
 
 
 @router.patch("/groups/update_types_and_status")
-async def update_groups():
+async def update_groups(get_current_user: dict = Depends(get_current_user)):
     """
     Updates all groups in the database:
     - Assigns a type based on the last 200 messages using GPT
@@ -1037,6 +1051,9 @@ async def update_groups():
     - Stores group type in categories_collection
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         groups = await groups_collection.find({}).to_list(None)
         updated_groups = []
 
@@ -1097,11 +1114,14 @@ async def update_groups():
 
 
 @router.patch("/groups/reactivate-all")
-async def reactivate_all_groups():
+async def reactivate_all_groups(get_current_user: dict = Depends(get_current_user)):
     """
     Reactivate all deactivated groups in the database.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         result = await groups_collection.update_many(
             {"is_active": False},
             {"$set": {"is_active": True}}
@@ -1130,13 +1150,16 @@ async def test_email(email: str):
 
 
 @router.patch("/groups/update_messages/{username}")
-async def update_group_messages(username: str):
+async def update_group_messages(username: str, get_current_user: dict = Depends(get_current_user)):
     """
     Update message documents for a specific group based on its username.
     Updates the fields: views, reactions, reply_to in the messages collection.
     """
 
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Find the group associated with the provided username
         group = await groups_collection.find_one({"username": username})
 
@@ -1185,11 +1208,14 @@ async def update_group_messages(username: str):
 
 
 @router.delete("/messages/remove_fields")
-async def remove_message_fields():
+async def remove_message_fields(get_current_user: dict = Depends(get_current_user)):
     """
     Remove 'views', 'reactions', and 'reply_to' fields from all message documents.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Perform bulk update to unset the fields
         result = await messages_collection.update_many(
             {},  # Update all documents

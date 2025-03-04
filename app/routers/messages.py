@@ -1,5 +1,5 @@
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 from fastapi import Query
 from datetime import datetime, timedelta, timezone
@@ -9,6 +9,7 @@ from app.services.telegram_listener import update_listener
 from app.utils.aws_translate import translate_to_english
 from app.utils.serialize_mongo import serialize_mongo_document
 from app.telegram_client import telegram_client
+from app.middlewares.auth_middleware import get_current_user
 import os
 import re
 
@@ -25,12 +26,15 @@ class TranslateRequest(BaseModel):
 
 
 @router.get("/messages")
-async def get_messages(username: str, minutes: int):
+async def get_messages(username: str, minutes: int, get_current_user: dict = Depends(get_current_user)):
     """
     Fetch messages from a group by username within the last X minutes.
     Validate the group against Telegram and return its details with messages.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Fetch the group by username from the database
         clean_username = username.lstrip("@")
         group = await groups_collection.find_one({"username": clean_username})
@@ -101,6 +105,7 @@ async def search_messages(
     sortOrder: str = "latest",  # Sorting order: "latest" (default) or "oldest"
     page: int = 1,  # Pagination
     limit: int = 10,  # Number of items per page
+    get_current_user: dict = Depends(get_current_user)
 ):
     """
     Search messages using keyword logic:
@@ -110,6 +115,9 @@ async def search_messages(
     """
 
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Base query to ensure messages have content or media
         query = {
             "$or": [
@@ -248,12 +256,15 @@ async def search_messages(
 
 
 @router.post("/messages/translate")
-async def translate_messages(request: TranslateRequest):
+async def translate_messages(request: TranslateRequest, get_current_user: dict = Depends(get_current_user)):
     """
     Translate text to English using AWS Translate and store in MongoDB.
     First checks if translation already exists in database.
     """
     try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
         # Try to find existing message and translation
         message = await messages_collection.find_one({"_id": ObjectId(request.id)})
         if not message:
