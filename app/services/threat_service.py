@@ -58,7 +58,7 @@ async def process_message_for_alerts(message_data, group_info):
                     "user_id": user_id,
                     "message_id": message_id,
                     "group_id": group_info.get("group_id"),
-                    "group_name": group_info.get("username"),
+                    "group_name": group_info.get("title"),
                     "text": message_data.get("text", ""),  # Store original text with case preserved
                     "matched_keyword": keyword,
                     "alert_types": alert_types,
