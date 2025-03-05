@@ -30,6 +30,7 @@ async def decode_access_token(token: str):
             "sub": payload["sub"],
             "exp": payload["exp"],
             "username": username_from_payload_email["username"],
+            "user_id": username_from_payload_email["_id"],
         }
     except JWTError:
         return None

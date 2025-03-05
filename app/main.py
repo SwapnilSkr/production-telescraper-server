@@ -3,8 +3,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.telegram_client import telegram_client
+from app.services.threat_service import process_message_for_alerts, setup_scheduled_email_alerts
 from contextlib import asynccontextmanager
-from app.routers import messages, groups, categories, auth
+from app.routers import messages, groups, categories, auth, alerts
 from app.services.telegram_listener import update_listener
 from app.utils.gpt_generations import generate_tags, save_tags
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -310,6 +311,9 @@ async def update_telegram_groups():
                         "tags": tags if tags else []
                     })
 
+                    # Process this message for alerts
+                    await process_message_for_alerts(message_doc, group)
+
                 logger.info(f"Successfully updated group: {group['username']}")
                 await asyncio.sleep(60)  # Prevent Telegram rate-limiting
 
@@ -355,6 +359,10 @@ async def app_lifespan(app: FastAPI):
         next_run_time = datetime.now(timezone.utc) + timedelta(seconds=10)
         scheduler.add_job(update_telegram_groups, trigger=DateTrigger(
             run_date=next_run_time), id=scheduler_job_id)
+        
+        # Set up scheduled email alerts for daily and weekly digests
+        await setup_scheduled_email_alerts(scheduler)
+
         scheduler.start()
         print("Scheduler started.")
 
@@ -384,6 +392,7 @@ app.include_router(auth.router)
 app.include_router(messages.router)
 app.include_router(groups.router)
 app.include_router(categories.router)
+app.include_router(alerts.router)
 
 # Create Socket.IO server
 sio = socketio.AsyncServer(
