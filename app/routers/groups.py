@@ -567,6 +567,14 @@ async def add_group(group: dict):
             "telescopebucket101": "ap-south-1",
         }
 
+        # Check if the group already exists in the database
+        existing_group = await groups_collection.find_one({"username": group["username"].lstrip("@")})
+        if existing_group:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Group with username '{group['username']}' already exists in the database"
+            )
+
         # Validate the group on Telegram
         try:
             entity = await telegram_client.get_entity(group["username"].lstrip("@"))
