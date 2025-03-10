@@ -24,6 +24,44 @@ class TranslateRequest(BaseModel):
     text: str
     target_language: Optional[str] = "en"
 
+@router.post("/messages/translate")
+async def translate_messages(request: TranslateRequest, get_current_user: dict = Depends(get_current_user)):
+    """
+    Translate text to English using AWS Translate and store in MongoDB.
+    First checks if translation already exists in database.
+    """
+    try:
+        if not get_current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        # Try to find existing message and translation
+        message = await messages_collection.find_one({"_id": ObjectId(request.id)})
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        # Check if translation already exists
+        if message.get("translated_text"):
+            if request.text == message["translated_text"]:
+                # If incoming text matches stored translation, return original text
+                return {"translated_text": message["text"]}
+            else:
+                # Otherwise return the stored translation
+                return {"translated_text": message["translated_text"]}
+
+        # Translate and store if no existing translation
+        translated_text = translate_to_english(request.text)
+
+        # Update message document with translation
+        await messages_collection.update_one(
+            {"_id": ObjectId(request.id)},
+            {"$set": {"translated_text": translated_text}}
+        )
+
+        return {"translated_text": translated_text}
+
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/messages")
 async def get_messages(username: str, minutes: int, get_current_user: dict = Depends(get_current_user)):
@@ -254,42 +292,3 @@ async def search_messages(
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.post("/messages/translate")
-async def translate_messages(request: TranslateRequest, get_current_user: dict = Depends(get_current_user)):
-    """
-    Translate text to English using AWS Translate and store in MongoDB.
-    First checks if translation already exists in database.
-    """
-    try:
-        if not get_current_user:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        # Try to find existing message and translation
-        message = await messages_collection.find_one({"_id": ObjectId(request.id)})
-        if not message:
-            raise HTTPException(status_code=404, detail="Message not found")
-
-        # Check if translation already exists
-        if message.get("translated_text"):
-            if request.text == message["translated_text"]:
-                # If incoming text matches stored translation, return original text
-                return {"translated_text": message["text"]}
-            else:
-                # Otherwise return the stored translation
-                return {"translated_text": message["translated_text"]}
-
-        # Translate and store if no existing translation
-        translated_text = translate_to_english(request.text)
-
-        # Update message document with translation
-        await messages_collection.update_one(
-            {"_id": ObjectId(request.id)},
-            {"$set": {"translated_text": translated_text}}
-        )
-
-        return {"translated_text": translated_text}
-
-    except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))

@@ -65,7 +65,7 @@ async def categorize_group_with_gpt(messages_text):
             "You are an AI trained to categorize Telegram groups based on their recent messages. "
             "Analyze the following messages from a group and determine the type of this group. These messages are a group which discusses about cyber crimes, hacking, and other illegal activities."
             "Here are some example categories: Cybercrime, Hacktivist, APT."
-            "If the group doesn’t fit into any of these, create a new category where the first letter will be Uppercase and rest in lowercase and provide only the category name as output. "
+            "If the group doesn't fit into any of these, create a new category where the first letter will be Uppercase and rest in lowercase and provide only the category name as output. "
             "Consider keywords, tone, and subject matter to determine the group's primary theme.\n\n"
             f"Recent messages:\n{messages_text}\n\n"
             "Provide ONLY the category name in with first letter as Uppercase and the rest as lowercase as the response and nothing else."
@@ -458,6 +458,12 @@ async def search_groups(
 
         # **Keyword Search in Group Title**
         if keyword:
+            # Ensure keyword is a string
+            if not isinstance(keyword, str):
+                raise HTTPException(
+                    status_code=400, detail="Keyword must be a string"
+                )
+                
             keyword = keyword.strip()  # Remove leading/trailing spaces
             if keyword == "":
                 raise HTTPException(
@@ -481,6 +487,8 @@ async def search_groups(
 
         if status:
             query["status"] = status
+
+        print(f"Query: {query}")
 
         # **Total groups count for pagination**
         total_groups = await groups_collection.count_documents(query)
@@ -551,6 +559,7 @@ async def search_groups(
         }
 
     except Exception as e:
+        print(f"Error in search_groups: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

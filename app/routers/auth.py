@@ -12,6 +12,8 @@ router = APIRouter()
 @router.post("/register_account", status_code=201)
 async def register_user(user: UserCreate):
     """Register a new user."""
+    # Email validation is now handled by the UserCreate schema
+    
     existing_user = await authenticate_user(user.email, user.password)
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")

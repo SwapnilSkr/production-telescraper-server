@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.telegram_client import telegram_client
 from app.services.threat_service import process_message_for_alerts, setup_scheduled_email_alerts
 from contextlib import asynccontextmanager
-from app.routers import messages, groups, categories, auth, alerts
+from app.routers import messages, groups, categories, auth, alerts, threats
 from app.services.telegram_listener import update_listener
 from app.utils.gpt_generations import generate_tags, save_tags
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -393,6 +393,7 @@ app.include_router(messages.router)
 app.include_router(groups.router)
 app.include_router(categories.router)
 app.include_router(alerts.router)
+app.include_router(threats.router)
 
 # Create Socket.IO server
 sio = socketio.AsyncServer(
