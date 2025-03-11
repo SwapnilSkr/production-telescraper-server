@@ -3,6 +3,8 @@ from typing import List, Optional
 from app.database import threat_library_collection
 from app.middlewares.auth_middleware import get_current_user
 from bson import ObjectId
+from datetime import datetime
+from app.utils.serialize_mongo import serialize_mongo_document
 
 router = APIRouter()
 
@@ -242,3 +244,93 @@ async def get_alert_types_percentage(
         })
     
     return formatted_result
+
+@router.get("/alerts-by-user")
+async def get_alerts_by_user(
+    keyword: Optional[str] = None,
+    alert_type: Optional[str] = None,
+    notified: Optional[str] = None,
+    page: int = 1,
+    limit: int = 10,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get alerts for the current user with optional filtering.
+    
+    Parameters:
+    - keyword: Optional search term to filter alerts by content
+    - alert_type: Optional filter by alert type
+    - notified: Optional filter by alert notified (true/false)
+    - page: Page number for pagination
+    - limit: Number of items per page
+    """
+    try:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        
+        user_id = current_user["user_id"]
+        
+        # Build the query filter
+        query = {"user_id": user_id}
+        
+        if keyword:
+            query["text"] = {"$regex": keyword, "$options": "i"}
+        
+        if alert_type and alert_type != "All":
+            query["alert_types"] = alert_type  # Search in the alert_types array
+            
+        if notified and notified != "All":
+            query["is_notified"] = True if notified == "true" else False
+        
+        # Calculate skip for pagination
+        skip = (page - 1) * limit
+        
+        # Get total count for pagination
+        total_count = await threat_library_collection.count_documents(query)
+        total_pages = (total_count + limit - 1) // limit  # Ceiling division
+        
+        # Get alerts with pagination
+        cursor = threat_library_collection.find(query).sort("timestamp", -1).skip(skip).limit(limit)
+        alerts = await cursor.to_list(length=limit)
+        
+        # Serialize the results
+        serialized_alerts = [serialize_mongo_document(alert) for alert in alerts]
+        
+        return {
+            "status": "success",
+            "message": "Alerts retrieved successfully",
+            "alerts": serialized_alerts,
+            "total_pages": total_pages,
+            "current_page": page,
+            "total_count": total_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/mark-alert-read/{alert_id}")
+async def mark_alert_as_read(
+    alert_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Mark an alert as read.
+    """
+    try:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        
+        # Update the alert status
+        result = await threat_library_collection.update_one(
+            {"_id": ObjectId(alert_id), "user_id": current_user["user_id"]},
+            {"$set": {"status": "read", "updated_at": datetime.now()}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Alert not found or already marked as read")
+        
+        return {
+            "status": "success",
+            "message": "Alert marked as read"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
