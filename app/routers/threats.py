@@ -290,7 +290,7 @@ async def get_alerts_by_user(
         total_pages = (total_count + limit - 1) // limit  # Ceiling division
         
         # Get alerts with pagination
-        cursor = threat_library_collection.find(query).sort("timestamp", -1).skip(skip).limit(limit)
+        cursor = threat_library_collection.find(query).sort("date_detected", -1).skip(skip).limit(limit)
         alerts = await cursor.to_list(length=limit)
         
         # Serialize the results
