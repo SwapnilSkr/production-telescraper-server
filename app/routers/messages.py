@@ -180,12 +180,9 @@ async def search_messages(
                 base_query["date"]["$gte"] = start_date
             if end_date:
                 base_query["date"]["$lte"] = end_date
-
-        # Content filtering - only add after base filtering is applied
-        content_conditions = []
         
-        # Handle text content condition
-        text_condition = {"text": {"$ne": ""}}
+        # Content filtering
+        content_conditions = []
         
         # Handle keyword search if provided
         if keyword:
@@ -193,16 +190,39 @@ async def search_messages(
             if not keyword:
                 text_condition = {"text": {"$ne": ""}}
             else:
-                # Prefix match
-                text_condition = {"text": {"$regex": re.escape(keyword), "$options": "i"}}
+                # Direct regex search with prioritization
+                # Move the text condition directly to the base query for better accuracy
+                # This makes text search a primary filter instead of part of an $or condition
+                base_query["text"] = {"$regex": re.escape(keyword), "$options": "i"}
+                # Remove the text condition from content conditions since we're handling it directly
+                text_condition = None
+        else:
+            text_condition = {"text": {"$ne": ""}}
         
-        content_conditions.append(text_condition)
+        # Only add text condition to content_conditions if it exists
+        if text_condition:
+            content_conditions.append(text_condition)
         
         # Add media condition
         content_conditions.append({"media": {"$ne": None}})
         
-        # Add content conditions to query
-        base_query["$or"] = content_conditions
+        # Only add $or to the query if we have content conditions
+        if content_conditions:
+            base_query["$or"] = content_conditions
+        
+        # Category filtering
+        if category:
+            category_doc = await categories_collection.find_one({"name": category.upper()})
+            if not category_doc:
+                return {"messages": [], "total_pages": 0, "current_page": page}
+            base_query["category"] = category_doc.get("name")
+        
+        # Tag filtering
+        if tag:
+            tag_doc = await tags_collection.find_one({"tag": tag})
+            if not tag_doc:
+                return {"messages": [], "total_pages": 0, "current_page": page}
+            base_query["tags"] = tag_doc.get("tag")
         
         # Sort direction
         sort_direction = -1 if sortOrder == "latest" else 1
@@ -278,33 +298,18 @@ async def search_messages(
             extension = os.path.splitext(url)[-1].lower()
             return media_extensions.get(extension, "file")
         
-        # Prepare has_previous checks in batch using a single query
+        # Improved has_previous check - simpler and more reliable
         has_previous_map = {}
-        previous_check_pipeline = []
-        
+
+        # Check each message individually for previous messages
         for msg in latest_messages:
-            # Add a check for each message
-            previous_check_pipeline.append({
-                "$match": {
-                    "group_id": msg["group_id"],
-                    "date": {"$lt": msg["date"]}
-                }
-            })
-            previous_check_pipeline.append({"$limit": 1})
-            previous_check_pipeline.append({"$project": {"_id": 1, "group_id": 1, "reference_id": {"$literal": str(msg["_id"])}}})
+            has_previous = await messages_collection.count_documents({
+                "group_id": msg["group_id"],
+                "date": {"$lt": msg["date"]}
+            }, limit=1) > 0
             
-            # Add a union to continue with the next check
-            if msg != latest_messages[-1]:  # Skip for the last item
-                previous_check_pipeline.append({"$unionWith": {"coll": "messages"}})
-        
-        # Execute the batch has_previous check if there are messages
-        if latest_messages:
-            previous_results = await messages_collection.aggregate(previous_check_pipeline).to_list(None)
-            
-            # Map results to message IDs
-            for result in previous_results:
-                if "reference_id" in result:
-                    has_previous_map[result["reference_id"]] = True
+            # Store the result
+            has_previous_map[str(msg["_id"])] = has_previous
         
         # Format messages for response
         formatted_messages = []
