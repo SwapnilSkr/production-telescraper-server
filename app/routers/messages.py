@@ -185,11 +185,15 @@ async def search_messages(
         if keyword:
             keyword = keyword.strip()
             if keyword:
-                # Use text index search instead of regex for better performance
-                if len(keyword) > 2:  # Only use text search for meaningful terms
-                    base_query["$text"] = {"$search": keyword}
+                # For exact phrase matching, we need to handle it differently based on keyword length
+                if len(keyword.split()) > 1:
+                    # For multi-word phrases, use $text with quotes for exact phrase matching
+                    base_query["$text"] = {"$search": f"\"{keyword}\""}
+                elif len(keyword) > 2:
+                    # For single words longer than 2 chars, use word boundary regex for exact match
+                    base_query["text"] = {"$regex": f"\\b{re.escape(keyword)}\\b", "$options": "i"}
                 else:
-                    # For very short keywords, fallback to regex but make sure it's anchored
+                    # For very short keywords, use the same word boundary approach
                     base_query["text"] = {"$regex": f"\\b{re.escape(keyword)}\\b", "$options": "i"}
         
         # Category filtering
@@ -367,9 +371,9 @@ async def get_previous_message(
         previous_message = await messages_collection.find_one(
             {
                 "group_id": group_id,
-                "date": {"$lt": current_message["date"]}
+                "message_id": {"$lt": current_message["message_id"]}
             },
-            sort=[("date", -1)]  # Get the most recent message before the current one
+            sort=[("message_id", -1)]  # Get the most recent message before the current one
         )
         
         if not previous_message:
