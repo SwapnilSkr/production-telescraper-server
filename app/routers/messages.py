@@ -146,234 +146,210 @@ async def search_messages(
     get_current_user: dict = Depends(get_current_user)
 ):
     """
-    Search messages using keyword logic and group by channel, showing only the latest message per channel.
-    Groups are sorted by their latest message timestamp.
+    High-performance search for messages, optimized for a large collection.
+    Shows the latest message per channel, with efficient pagination and filtering.
     """
-
     try:
         if not get_current_user:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        # Base query to ensure messages have content or media
-        query = {
-            "$or": [
-                {"text": {"$ne": ""}},
-                {"media": {"$exists": True, "$ne": None}},
-            ]
-        }
+        # Create indexes if they don't exist (run this rarely, not on every request in production)
+        # await messages_collection.create_index([("group_id", 1), ("date", -1)])
+        # await messages_collection.create_index([("text", "text")])
+        # await messages_collection.create_index([("media", 1)])
+        # await messages_collection.create_index([("date", 1)])
+        # await groups_collection.create_index([("group_id", 1)])
 
-        print(f"group_ids: {group_ids}")
-        # Filter by date range
-        if start_date and end_date:
-            query["date"] = {"$gte": start_date, "$lte": end_date}
-        elif start_date:
-            query["date"] = {"$gte": start_date}
-        elif end_date:
-            query["date"] = {"$lte": end_date}
+        # Build query with minimal conditions first
+        base_query = {}
 
+        # Handle group_ids - this is the most important filter for performance
         if group_ids:
             try:
-                int_group_ids = [int(group_id) for group_id in group_ids]
-                matching_groups = await groups_collection.find(
-                    {"group_id": {"$in": int_group_ids}},
-                    {"group_id": 1}  # Only retrieve group_id field
-                ).to_list(None)
+                # Convert to integers directly
+                int_group_ids = [int(gid) for gid in group_ids]
+                base_query["group_id"] = {"$in": int_group_ids}
+            except (ValueError, TypeError):
+                # Return empty results for invalid group_ids instead of full table scan
+                return {"messages": [], "total_pages": 0, "current_page": page}
+        
+        # Date filtering - add to base query as it uses an index
+        if start_date or end_date:
+            base_query["date"] = {}
+            if start_date:
+                base_query["date"]["$gte"] = start_date
+            if end_date:
+                base_query["date"]["$lte"] = end_date
 
-                print(f"matching_groups: {matching_groups}")
-
-                if not matching_groups:
-                    return {
-                        "messages": [],
-                        "total_pages": 0,
-                        "current_page": page,
-                    }
-
-                # Add group_ids to the query
-                query["group_id"] = {"$in": [group["group_id"] for group in matching_groups]}
-            except ValueError:
-                # Handle invalid group_id conversion
-                return {
-                    "messages": [],
-                    "total_pages": 0,
-                    "current_page": page,
-                }
-
-        # Filter by category
-        if category:
-            category_doc = await categories_collection.find_one({"name": category.upper()})
-            if not category_doc:
-                return {
-                    "messages": [],
-                    "total_pages": 0,
-                    "current_page": page,
-                }
-            query["category"] = category_doc.get("name")
-
-        # Filter by tag
-        if tag:
-            tag_doc = await tags_collection.find_one({"tag": tag})
-            if not tag_doc:
-                return {
-                    "messages": [],
-                    "total_pages": 0,
-                    "current_page": page,
-                }
-            query["tags"] = tag_doc.get("tag")
-
-        # **Keyword Search Logic**
+        # Content filtering - only add after base filtering is applied
+        content_conditions = []
+        
+        # Handle text content condition
+        text_condition = {"text": {"$ne": ""}}
+        
+        # Handle keyword search if provided
         if keyword:
-            keyword = keyword.strip()  # Remove leading/trailing spaces
-
-            if keyword == "":  # Ignore empty searches
-                return {
-                    "messages": [],
-                    "total_pages": 0,
-                    "current_page": page,
-                }
-
-            if keyword.endswith(" "):
-                # **Exact word match** (if keyword has space at the end)
-                query["text"] = {
-                    "$regex": f"\\b{re.escape(keyword.strip())}\\b", "$options": "i"}
+            keyword = keyword.strip()
+            if not keyword:
+                text_condition = {"text": {"$ne": ""}}
+            elif keyword.endswith(" "):
+                # Exact word match
+                text_condition = {"text": {"$regex": f"\\b{re.escape(keyword.strip())}\\b", "$options": "i"}}
             else:
-                # **Prefix match until a space is hit**
-                query["text"] = {
-                    "$regex": f"\\b{re.escape(keyword)}[^ ]*", "$options": "i"}
+                # Prefix match
+                text_condition = {"text": {"$regex": f"\\b{re.escape(keyword)}[^ ]*", "$options": "i"}}
+        
+        content_conditions.append(text_condition)
+        
+        # Add media condition
+        content_conditions.append({"media": {"$ne": None}})
+        
+        # Add content conditions to query
+        base_query["$or"] = content_conditions
+        
+        # Sort direction
+        sort_direction = -1 if sortOrder == "latest" else 1
 
-        # Sorting order
-        sort_order = -1 if sortOrder == "latest" else 1
-
-        # Use a simpler approach to avoid memory issues with aggregation
-        # 1. Get distinct group_ids that match the query
-        distinct_group_ids = await messages_collection.distinct("group_id", query)
+        # Use aggregation pipeline with optimization strategies
+        pipeline = []
         
-        if not distinct_group_ids:
-            return {
-                "messages": [],
-                "total_pages": 0,
-                "current_page": page,
+        # 1. Match stage - apply base filtering first to reduce document set
+        pipeline.append({"$match": base_query})
+        
+        # 2. Sort by date (descending) before grouping
+        pipeline.append({"$sort": {"date": -1}})
+        
+        # 3. Group by group_id, keeping the first document (latest per group)
+        pipeline.append({
+            "$group": {
+                "_id": "$group_id",
+                "doc": {"$first": "$$ROOT"},
+                "latest_date": {"$first": "$date"}
             }
+        })
         
-        # 2. For each group_id, find the latest message timestamp
-        # This uses a more efficient approach with projection
-        group_latest_timestamps = []
-        for group_id in distinct_group_ids:
-            latest_message = await messages_collection.find_one(
-                {**query, "group_id": group_id},
-                sort=[("date", -1)],  # Always get the newest message first
-                projection={"date": 1, "group_id": 1}
-            )
-            if latest_message:
-                group_latest_timestamps.append({
-                    "group_id": group_id,
-                    "latest_timestamp": latest_message["date"]
-                })
+        # 4. Sort the groups by date according to user's preference
+        pipeline.append({"$sort": {"latest_date": sort_direction}})
         
-        # 3. Sort the groups by their latest message timestamp
-        group_latest_timestamps.sort(
-            key=lambda x: x["latest_timestamp"], 
-            reverse=(sortOrder == "latest")  # True for latest, False for oldest
-        )
+        # 5. Apply pagination using $skip and $limit
+        pipeline.append({"$skip": (page - 1) * limit})
+        pipeline.append({"$limit": limit})
         
-        # 4. Count total unique groups for pagination
-        total_groups = len(group_latest_timestamps)
+        # 6. Project to extract the full document for further processing
+        pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
         
-        if total_groups == 0:
-            return {
-                "messages": [],
-                "total_pages": 0,
-                "current_page": page,
-            }
+        # Execute the aggregation
+        latest_messages = await messages_collection.aggregate(pipeline).to_list(None)
         
-        # 5. Apply pagination to the sorted group_ids
-        paginated_groups = group_latest_timestamps[(page-1)*limit:page*limit]
-        paginated_group_ids = [group["group_id"] for group in paginated_groups]
+        # If no messages found, return empty result
+        if not latest_messages:
+            return {"messages": [], "total_pages": 0, "current_page": page}
         
-        if not paginated_group_ids:
-            return {
-                "messages": [],
-                "total_pages": total_groups // limit + (1 if total_groups % limit > 0 else 0),
-                "current_page": page,
-            }
+        # Count total for pagination - use a faster counting approach
+        # Instead of distinct + count, do a targeted count with the same base query
+        count_pipeline = [
+            {"$match": base_query},
+            {"$group": {"_id": "$group_id"}},
+            {"$count": "total"}
+        ]
         
-        # 6. For each paginated group_id, find the latest message (fetch in one query if possible)
-        latest_messages = []
-        for group_id in paginated_group_ids:
-            # Find the latest message for this group
-            latest_message = await messages_collection.find_one(
-                {**query, "group_id": group_id},
-                sort=[("date", -1)]  # Always get the newest message first
-            )
-            
-            if latest_message:
-                latest_messages.append(latest_message)
+        count_result = await messages_collection.aggregate(count_pipeline).to_list(None)
+        total_groups = count_result[0]["total"] if count_result else 0
         
-        # Calculate total pages correctly
+        # Calculate total pages
         total_pages = (total_groups + limit - 1) // limit  # Ceiling division
-
-        # Fetch group titles in one query
-        group_ids = list(set(msg["group_id"] for msg in latest_messages))
+        
+        # Fetch group information in a single query
+        group_ids = [msg["group_id"] for msg in latest_messages]
         groups = await groups_collection.find(
             {"group_id": {"$in": group_ids}},
-            {"group_id": 1, "title": 1}  # Only get the fields we need
+            {"group_id": 1, "title": 1}
         ).to_list(None)
+        
+        # Map group_id to title for quick lookups
         group_map = {group["group_id"]: group["title"] for group in groups}
-
-        # Optimize media classification
+        
+        # Media classification with lookup table for efficiency
         media_extensions = {
             **{ext: "image" for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]},
             **{ext: "video" for ext in [".mp4", ".mkv", ".avi", ".mov"]}
         }
         
-        def classify_media_optimized(media_url):
-            if not media_url:
+        def classify_media(url):
+            if not url:
                 return None
-            extension = os.path.splitext(media_url)[-1].lower()
+            extension = os.path.splitext(url)[-1].lower()
             return media_extensions.get(extension, "file")
-
+        
+        # Prepare has_previous checks in batch using a single query
+        has_previous_map = {}
+        previous_check_pipeline = []
+        
+        for msg in latest_messages:
+            # Add a check for each message
+            previous_check_pipeline.append({
+                "$match": {
+                    "group_id": msg["group_id"],
+                    "date": {"$lt": msg["date"]}
+                }
+            })
+            previous_check_pipeline.append({"$limit": 1})
+            previous_check_pipeline.append({"$project": {"_id": 1, "group_id": 1, "reference_id": {"$literal": str(msg["_id"])}}})
+            
+            # Add a union to continue with the next check
+            if msg != latest_messages[-1]:  # Skip for the last item
+                previous_check_pipeline.append({"$unionWith": {"coll": "messages"}})
+        
+        # Execute the batch has_previous check if there are messages
+        if latest_messages:
+            previous_results = await messages_collection.aggregate(previous_check_pipeline).to_list(None)
+            
+            # Map results to message IDs
+            for result in previous_results:
+                if "reference_id" in result:
+                    has_previous_map[result["reference_id"]] = True
+        
         # Format messages for response
         formatted_messages = []
         for msg in latest_messages:
-            media_url = msg.get("media", None)
-            media_type = classify_media_optimized(media_url)
+            msg_id = str(msg["_id"])
+            
+            # Process media
+            media_url = msg.get("media")
             media_obj = None
+            
             if media_url:
+                media_type = classify_media(media_url)
                 if media_type == "image":
-                    media_obj = {"type": "image",
-                                "url": media_url, "alt": "Image content"}
+                    media_obj = {"type": "image", "url": media_url, "alt": "Image content"}
                 elif media_type == "video":
-                    media_obj = {"type": "video", "url": media_url,
-                                "thumbnail": "Telegram Video"}
+                    media_obj = {"type": "video", "url": media_url, "thumbnail": "Telegram Video"}
                 else:
-                    media_obj = {"type": "file", "url": media_url,
-                                "name": os.path.basename(media_url)}
-
-            # Check if there are previous messages for this group - using a more efficient count
-            has_previous = await messages_collection.count_documents({
-                "group_id": msg["group_id"],
-                "date": {"$lt": msg["date"]}
-            }, limit=1) > 0
-
+                    media_obj = {"type": "file", "url": media_url, "name": os.path.basename(media_url)}
+            
+            # Add formatted message
             formatted_messages.append({
-                "id": str(msg["_id"]),  # Convert MongoDB ObjectId to string
-                "message_id": msg["message_id"],  # Include the original message_id
-                "group_id": msg["group_id"],  # Include the group_id
+                "id": msg_id,
+                "message_id": msg.get("message_id"),
+                "group_id": msg["group_id"],
                 "channel": group_map.get(msg["group_id"], "Unknown Group"),
                 "timestamp": msg["date"].isoformat(),
-                "content": msg["text"] or "No content",
+                "content": msg.get("text", "") or "No content",
                 "tags": msg.get("tags", ["no tags found"]),
-                "media": media_obj if media_url else None,
-                "has_previous": has_previous  # Indicate if there are previous messages
+                "media": media_obj,
+                "has_previous": has_previous_map.get(msg_id, False)
             })
-
+        
         return {
             "messages": formatted_messages,
             "total_pages": total_pages,
-            "current_page": page,
+            "current_page": page
         }
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in search_messages: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
