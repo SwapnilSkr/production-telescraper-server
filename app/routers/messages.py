@@ -1,5 +1,6 @@
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
+import asyncio
 from typing import List, Optional
 from fastapi import Query
 from datetime import datetime, timedelta, timezone
@@ -153,87 +154,71 @@ async def search_messages(
         if not get_current_user:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        # Create indexes if they don't exist (run this rarely, not on every request in production)
-        # await messages_collection.create_index([("group_id", 1), ("date", -1)])
-        # await messages_collection.create_index([("text", "text")])
-        # await messages_collection.create_index([("media", 1)])
-        # await messages_collection.create_index([("date", 1)])
-        # await groups_collection.create_index([("group_id", 1)])
-
         # Build query with minimal conditions first
         base_query = {}
 
         # Handle group_ids - this is the most important filter for performance
         if group_ids:
             try:
-                # Convert to integers directly
-                int_group_ids = [int(gid) for gid in group_ids]
-                base_query["group_id"] = {"$in": int_group_ids}
+                # Convert to integers and validate before adding to query
+                int_group_ids = [int(gid) for gid in group_ids if gid.strip()]
+                if int_group_ids:  # Only add if we have valid IDs
+                    base_query["group_id"] = {"$in": int_group_ids}
+                else:
+                    # Return empty results for completely invalid group_ids
+                    return {"messages": [], "total_pages": 0, "current_page": page}
             except (ValueError, TypeError):
-                # Return empty results for invalid group_ids instead of full table scan
+                # Return empty results for invalid group_ids
                 return {"messages": [], "total_pages": 0, "current_page": page}
         
         # Date filtering - add to base query as it uses an index
         if start_date or end_date:
-            base_query["date"] = {}
+            date_query = {}
             if start_date:
-                base_query["date"]["$gte"] = start_date
+                date_query["$gte"] = start_date
             if end_date:
-                base_query["date"]["$lte"] = end_date
+                date_query["$lte"] = end_date
+            if date_query:
+                base_query["date"] = date_query
         
-        # Content filtering
-        content_conditions = []
-        
-        # Handle keyword search if provided
+        # Prepare text search conditions
         if keyword:
             keyword = keyword.strip()
-            if not keyword:
-                text_condition = {"text": {"$ne": ""}}
-            else:
-                # Direct regex search with prioritization
-                # Move the text condition directly to the base query for better accuracy
-                # This makes text search a primary filter instead of part of an $or condition
-                base_query["text"] = {"$regex": re.escape(keyword), "$options": "i"}
-                # Remove the text condition from content conditions since we're handling it directly
-                text_condition = None
-        else:
-            text_condition = {"text": {"$ne": ""}}
-        
-        # Only add text condition to content_conditions if it exists
-        if text_condition:
-            content_conditions.append(text_condition)
-        
-        # Add media condition
-        content_conditions.append({"media": {"$ne": None}})
-        
-        # Only add $or to the query if we have content conditions
-        if content_conditions:
-            base_query["$or"] = content_conditions
+            if keyword:
+                # Use text index search instead of regex for better performance
+                if len(keyword) > 2:  # Only use text search for meaningful terms
+                    base_query["$text"] = {"$search": keyword}
+                else:
+                    # For very short keywords, fallback to regex but make sure it's anchored
+                    base_query["text"] = {"$regex": f"\\b{re.escape(keyword)}\\b", "$options": "i"}
         
         # Category filtering
-        if category:
-            category_doc = await categories_collection.find_one({"name": category.upper()})
-            if not category_doc:
+        if category and category.strip():
+            category_upper = category.strip().upper()
+            category_doc = await categories_collection.find_one({"name": category_upper})
+            if category_doc:
+                base_query["category"] = category_doc.get("name")
+            else:
                 return {"messages": [], "total_pages": 0, "current_page": page}
-            base_query["category"] = category_doc.get("name")
         
         # Tag filtering
-        if tag:
-            tag_doc = await tags_collection.find_one({"tag": tag})
-            if not tag_doc:
+        if tag and tag.strip():
+            tag_doc = await tags_collection.find_one({"tag": tag.strip()})
+            if tag_doc:
+                base_query["tags"] = tag_doc.get("tag")
+            else:
                 return {"messages": [], "total_pages": 0, "current_page": page}
-            base_query["tags"] = tag_doc.get("tag")
         
         # Sort direction
         sort_direction = -1 if sortOrder == "latest" else 1
 
-        # Use aggregation pipeline with optimization strategies
+        # Use optimized aggregation pipeline
         pipeline = []
         
-        # 1. Match stage - apply base filtering first to reduce document set
+        # 1. Match stage - apply all filtering first to reduce document set
         pipeline.append({"$match": base_query})
         
-        # 2. Sort by date (descending) before grouping
+        # 2. Sort by date before grouping
         pipeline.append({"$sort": {"date": -1}})
         
         # 3. Group by group_id, keeping the first document (latest per group)
@@ -248,43 +233,57 @@ async def search_messages(
         # 4. Sort the groups by date according to user's preference
         pipeline.append({"$sort": {"latest_date": sort_direction}})
         
-        # 5. Apply pagination using $skip and $limit
-        pipeline.append({"$skip": (page - 1) * limit})
-        pipeline.append({"$limit": limit})
+        # 5. Count total groups before pagination for accurate pagination
+        count_pipeline = pipeline.copy()
+        count_pipeline.append({"$count": "total"})
         
-        # 6. Project to extract the full document for further processing
-        pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
+        # Continue with pagination for main query
+        main_pipeline = pipeline.copy()
+        main_pipeline.append({"$skip": (page - 1) * limit})
+        main_pipeline.append({"$limit": limit})
+        main_pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
         
-        # Execute the aggregation
-        latest_messages = await messages_collection.aggregate(pipeline).to_list(None)
+        # Execute count and main query in parallel - properly awaited
+        count_result = await messages_collection.aggregate(count_pipeline).to_list(length=None)
+        latest_messages = await messages_collection.aggregate(main_pipeline).to_list(length=None)
         
         # If no messages found, return empty result
         if not latest_messages:
             return {"messages": [], "total_pages": 0, "current_page": page}
         
-        # Count total for pagination - use a faster counting approach
-        # Instead of distinct + count, do a targeted count with the same base query
-        count_pipeline = [
-            {"$match": base_query},
-            {"$group": {"_id": "$group_id"}},
-            {"$count": "total"}
-        ]
-        
-        count_result = await messages_collection.aggregate(count_pipeline).to_list(None)
+        # Get total count
         total_groups = count_result[0]["total"] if count_result else 0
         
         # Calculate total pages
         total_pages = (total_groups + limit - 1) // limit  # Ceiling division
         
-        # Fetch group information in a single query
+        # Fetch group information
         group_ids = [msg["group_id"] for msg in latest_messages]
         groups = await groups_collection.find(
             {"group_id": {"$in": group_ids}},
             {"group_id": 1, "title": 1}
-        ).to_list(None)
+        ).to_list(length=None)
         
         # Map group_id to title for quick lookups
         group_map = {group["group_id"]: group["title"] for group in groups}
+        
+        # Process has_previous in a single aggregation
+        has_previous_map = {}
+        if latest_messages:
+            # Build OR conditions for all messages
+            has_previous_conditions = [
+                {"group_id": msg["group_id"], "date": {"$lt": msg["date"]}}
+                for msg in latest_messages
+            ]
+            
+            # Execute aggregation to find groups with previous messages
+            has_previous_results = await messages_collection.aggregate([
+                {"$match": {"$or": has_previous_conditions}},
+                {"$group": {"_id": "$group_id"}}
+            ]).to_list(length=None)
+            
+            # Convert to lookup map
+            has_previous_map = {result["_id"]: True for result in has_previous_results}
         
         # Media classification with lookup table for efficiency
         media_extensions = {
@@ -298,23 +297,10 @@ async def search_messages(
             extension = os.path.splitext(url)[-1].lower()
             return media_extensions.get(extension, "file")
         
-        # Improved has_previous check - simpler and more reliable
-        has_previous_map = {}
-
-        # Check each message individually for previous messages
-        for msg in latest_messages:
-            has_previous = await messages_collection.count_documents({
-                "group_id": msg["group_id"],
-                "date": {"$lt": msg["date"]}
-            }, limit=1) > 0
-            
-            # Store the result
-            has_previous_map[str(msg["_id"])] = has_previous
-        
         # Format messages for response
         formatted_messages = []
         for msg in latest_messages:
-            msg_id = str(msg["_id"])
+            group_id = msg["group_id"]
             
             # Process media
             media_url = msg.get("media")
@@ -331,15 +317,15 @@ async def search_messages(
             
             # Add formatted message
             formatted_messages.append({
-                "id": msg_id,
+                "id": str(msg["_id"]),
                 "message_id": msg.get("message_id"),
-                "group_id": msg["group_id"],
-                "channel": group_map.get(msg["group_id"], "Unknown Group"),
+                "group_id": group_id,
+                "channel": group_map.get(group_id, "Unknown Group"),
                 "timestamp": msg["date"].isoformat(),
                 "content": msg.get("text", "") or "No content",
                 "tags": msg.get("tags", ["no tags found"]),
                 "media": media_obj,
-                "has_previous": has_previous_map.get(msg_id, False)
+                "has_previous": has_previous_map.get(group_id, False)
             })
         
         return {
