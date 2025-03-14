@@ -6,7 +6,6 @@ from fastapi import Query
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 from app.database import messages_collection, groups_collection, tags_collection, categories_collection
-from app.services.telegram_listener import update_listener
 from app.utils.aws_translate import translate_to_english
 from app.utils.serialize_mongo import serialize_mongo_document
 from app.telegram_client import telegram_client
@@ -115,8 +114,6 @@ async def get_messages(username: str, minutes: int, get_current_user: dict = Dep
         serialized_messages = [
             serialize_mongo_document(msg) for msg in messages]
 
-        # Update listener to ensure it's up-to-date
-        await update_listener()
 
         # Return the group and its messages
         return {
@@ -325,7 +322,7 @@ async def search_messages(
                 "message_id": msg.get("message_id"),
                 "group_id": group_id,
                 "channel": group_map.get(group_id, "Unknown Group"),
-                "timestamp": msg["date"].isoformat(),
+                "timestamp": msg["date"],
                 "content": msg.get("text", "") or "No content",
                 "tags": msg.get("tags", ["no tags found"]),
                 "media": media_obj,

@@ -6,7 +6,6 @@ from app.telegram_client import telegram_client
 from app.services.threat_service import process_message_for_alerts, setup_scheduled_email_alerts
 from contextlib import asynccontextmanager
 from app.routers import messages, groups, categories, auth, alerts, threats
-from app.services.telegram_listener import update_listener
 from app.utils.gpt_generations import generate_tags, save_tags
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta, timezone
@@ -213,8 +212,11 @@ async def update_telegram_groups():
         logger.info(f"Starting scheduled update at {current_time}")
 
         groups = await groups_collection.find({"is_active": True}).to_list(None)
-        semaphore = asyncio.Semaphore(2)  # Process only 2 groups at a time
+        semaphore = asyncio.Semaphore(1)  # Process only 1 group at a time (changed from 2)
         new_messages = []  # Store new messages to broadcast
+
+        # Create a map of group_id to group info for quick lookups
+        group_map = {group["group_id"]: group for group in groups}
 
         async def process_group(group, bucket_index):
             """Process each group and collect new messages."""
@@ -266,7 +268,7 @@ async def update_telegram_groups():
                         f"recorded at {message_date}, content: {message.text}"
                     )
 
-                    tags = None
+                    tags = []
 
                     if message.media:
                         media_url = await process_message_media(message, group["group_id"], bucket_index)
@@ -274,10 +276,10 @@ async def update_telegram_groups():
                     else:
                         media_url = None
 
+                    # Uncomment if tag generation is needed
                     # if message.text:
                     #     # Generate tags for the message using GPT-4
                     #     tags = await generate_tags(message.text)
-
                     #     # Save unique tags to the database
                     #     await save_tags(tags)
 
@@ -292,8 +294,8 @@ async def update_telegram_groups():
                         "tags": tags if tags else []
                     }
 
-                    # Upsert the message
-                    await messages_collection.update_one(
+                    # Upsert the message in the database
+                    result = await messages_collection.update_one(
                         {
                             "message_id": message_doc["message_id"],
                             "group_id": message_doc["group_id"]
@@ -302,37 +304,88 @@ async def update_telegram_groups():
                         upsert=True
                     )
 
-                    new_messages.append({
-                        "id": message.id,
-                        "channel": group["username"],
+                    # Format message for socket broadcasting that matches frontend expectations
+                    formatted_message = {
+                        "id": str(message.id),  # Frontend expects string IDs
+                        "message_id": message.id, 
+                        "group_id": group["group_id"],
+                        "channel": group["title"],  # Use group title from database
                         "timestamp": message_date.isoformat(),
                         "content": message.text or "No content",
-                        "media": media_url if media_url else None,
-                        "tags": tags if tags else []
-                    })
+                        "tags": tags if tags else [],
+                        "has_previous": True  # Assume there might be more previous messages
+                    }
+
+                    # Handle media in a format matching frontend expectations
+                    if media_url:
+                        # Determine media type based on file extension
+                        file_ext = os.path.splitext(media_url)[1].lower() if media_url else ""
+                        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                            formatted_message["media"] = {
+                                "type": "image", 
+                                "url": media_url, 
+                                "alt": "Image content"
+                            }
+                        elif file_ext in ['.mp4', '.mkv', '.avi', '.mov']:
+                            formatted_message["media"] = {
+                                "type": "video", 
+                                "url": media_url, 
+                                "thumbnail": "Telegram Video"
+                            }
+                        else:
+                            formatted_message["media"] = {
+                                "type": "file", 
+                                "url": media_url, 
+                                "name": os.path.basename(media_url)
+                            }
+                    else:
+                        formatted_message["media"] = None
+
+                    # Add to new messages for broadcasting
+                    new_messages.append(formatted_message)
 
                     # Process this message for alerts
                     await process_message_for_alerts(message_doc, group)
 
+                    # Send immediate notification for individual messages if needed
+                    await sio.emit('new_message', formatted_message)
+
                 logger.info(f"Successfully updated group: {group['username']}")
-                await asyncio.sleep(60)  # Prevent Telegram rate-limiting
+                
+                
+                await asyncio.sleep(60) 
 
-        # Process all groups concurrently, but only 2 at a time
-        tasks = [process_group(group, idx) for idx, group in enumerate(groups)]
-        await asyncio.gather(*tasks)
+        # Process groups sequentially
+        for idx, group in enumerate(groups):
+            await process_group(group, idx)
 
-        # Broadcast new messages via Socket.IO if available
+        # Only broadcast if we have new messages
         if new_messages:
-            logger.info(
-                f"Broadcasting {len(new_messages)} new messages via Socket.IO...")
+            # Group messages by group_id
+            grouped_messages = {}
+            for msg in new_messages:
+                group_id = msg["group_id"]
+                if group_id not in grouped_messages:
+                    grouped_messages[group_id] = []
+                grouped_messages[group_id].append(msg)
+            
+            # For each group, select only the latest message
+            latest_group_messages = []
+            for group_id, msgs in grouped_messages.items():
+                # Sort by timestamp descending and take the first one
+                sorted_msgs = sorted(msgs, key=lambda x: x["timestamp"], reverse=True)
+                latest_group_messages.append(sorted_msgs[0])
+            
+            logger.info(f"Broadcasting {len(latest_group_messages)} new messages via Socket.IO...")
+            
+            # Format the broadcast to match frontend expectations
             await sio.emit('new_messages', {
                 "type": "new_messages",
-                "data": new_messages
+                "data": latest_group_messages
             })
 
-        # Reschedule the next cron job in 20 minutes
-        next_run_time = datetime.now(
-            timezone.utc) + timedelta(minutes=int(CRON_JOB_DURATION))
+        # Reschedule the next cron job
+        next_run_time = datetime.now(timezone.utc) + timedelta(minutes=int(CRON_JOB_DURATION))
         scheduler.add_job(
             update_telegram_groups,
             trigger=DateTrigger(run_date=next_run_time),
@@ -340,11 +393,12 @@ async def update_telegram_groups():
             replace_existing=True
         )
 
-        logger.info(
-            f"Completed scheduled update at {datetime.now(timezone.utc)}")
+        logger.info(f"Completed scheduled update at {datetime.now(timezone.utc)}")
 
     except Exception as e:
         logger.error(f"Error in update_telegram_groups: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 @asynccontextmanager
@@ -352,7 +406,6 @@ async def app_lifespan(app: FastAPI):
     try:
         await telegram_client.start()
         print("Telegram client started.")
-        await update_listener()
         print("Listener initialized at app startup.")
 
         # Start the scheduler with an initial run of the job
@@ -411,8 +464,35 @@ app.mount("/socket.io", socket_app)
 
 
 @sio.on('connect')
-async def connect(sid, environ):
-    print(f"Client connected: {sid}")
+async def connect(sid, environ, auth=None):
+    """
+    Handle client connection with optional authentication.
+    
+    Args:
+        sid: Session ID assigned by Socket.IO
+        environ: WSGI environment dictionary
+        auth: Optional authentication data sent by client
+    """
+    try:
+        # Log the connection
+        logger.info(f"Client connected: {sid}")
+        
+        # If you want to implement authentication, check the auth parameter
+        if auth and 'token' in auth:
+            # You can verify the token here
+            token = auth['token']
+            # For example, call your authentication function
+            # is_valid = await verify_token(token)
+            # if not is_valid:
+            #     return False  # Reject the connection
+            
+            logger.info(f"Client authenticated: {sid}")
+        
+        return True  # Accept the connection
+        
+    except Exception as e:
+        logger.error(f"Socket connection error: {e}")
+        return False  # Reject on error
 
 
 @sio.on('disconnect')

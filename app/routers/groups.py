@@ -6,7 +6,6 @@ from pymongo import UpdateOne
 from datetime import datetime, timezone
 from app.database import groups_collection, messages_collection, categories_collection
 from app.telegram_client import telegram_client
-from app.services.telegram_listener import update_listener
 from app.utils.serialize_mongo import serialize_mongo_document
 from app.utils.resend_email import send_email
 from app.middlewares.auth_middleware import get_current_user, isAuthenticated
@@ -412,7 +411,6 @@ async def get_valid_groups():
                 # Skip invalid or banned groups
                 continue
 
-        await update_listener()  # Refresh the listener with updated groups
         return {"groups": valid_groups}
 
     except Exception as e:
@@ -428,7 +426,6 @@ async def get_groups(get_current_user: dict = Depends(get_current_user)):
         if not get_current_user:
             raise HTTPException(status_code=401, detail="Unauthorized")
         groups = await groups_collection.find().to_list(None)
-        await update_listener()  # Refresh the listener with updated groups
         return {"groups": [serialize_mongo_document(group) for group in groups]}
 
     except Exception as e:
@@ -717,8 +714,6 @@ async def add_group(group: dict):
         # Store group ID in the appropriate category
         await update_category_collection(entity.id, group_category)
 
-        await update_listener()
-
         return {
             "message": "Group added successfully, categorized, and listener updated.",
             "group": group_data,
@@ -863,8 +858,6 @@ async def bulk_add_from_file(file: UploadFile = File(...)):
                 print("Sleeping for 60 seconds to avoid rate limits...")
                 await asyncio.sleep(60)
 
-        # Update the listener with all valid groups
-        await update_listener()
 
         return {
             "message": "Bulk group addition completed.",
@@ -947,7 +940,6 @@ async def deactivate_group(username: str, get_current_user: dict = Depends(get_c
             raise HTTPException(
                 status_code=404, detail="Failed to deactivate the group")
 
-        await update_listener()  # Refresh the listener
         response = await get_group_with_messages(username)
         return {
             "message": "Group deactivated successfully, listener updated.",
@@ -976,7 +968,6 @@ async def reactivate_group(username: str, get_current_user: dict = Depends(get_c
             raise HTTPException(
                 status_code=404, detail="Failed to reactivate the group")
 
-        await update_listener()  # Refresh the listener
         response = await get_group_with_messages(username)
         return {
             "message": "Group reactivated successfully, listener updated.",
@@ -1148,7 +1139,6 @@ async def reactivate_all_groups(get_current_user: dict = Depends(get_current_use
                 status_code=404, detail="No groups were reactivated"
             )
 
-        await update_listener()  # Refresh the listener
         return {"message": "All groups reactivated successfully"}
 
     except Exception as e:
